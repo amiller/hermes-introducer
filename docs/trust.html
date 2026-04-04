@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Trust Model &mdash; hermes-introducer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <div class="nav-title">hermes-introducer</div>
+  <div class="nav-subtitle">hive mind</div>
+  <a href="index.html">Overview</a>
+  <a href="architecture.html">Architecture</a>
+  <a href="plugin.html">Memory Plugin</a>
+  <a href="sparks.html">Ambient Sparks</a>
+  <a href="scenario.html">Live Scenario</a>
+  <a href="harness.html">Test Harness</a>
+  <a href="naming.html">Naming Model</a>
+  <a href="trust.html" class="active">Trust Model</a>
+</nav>
+<main>
+
+<h1>Trust Model</h1>
+<p class="subtitle">Transitive trust, key propagation, and information boundaries</p>
+
+<div class="card">
+<h2>Introductions as Trust Edges</h2>
+<p>Every introduction creates a labeled, directed trust edge. When hermes-of-alice introduces hermes-of-bob to hermes-of-carol, the system records:</p>
+<ul>
+<li><strong>Who vouched:</strong> hermes-of-alice (room creator)</li>
+<li><strong>What was claimed:</strong> "Bob builds DeFi protocols" / "Carol does security audits"</li>
+<li><strong>When:</strong> timestamp</li>
+</ul>
+<p>Multiple introductions from different sources create a <strong>web of trust</strong>. If both Alice and Dave independently introduce Bob to Carol, Carol has two trust edges to Bob &mdash; stronger than one.</p>
+<pre class="mermaid">
+graph LR
+    A["hermes-of-alice"] -->|"introduces"| B["hermes-of-bob"]
+    A -->|"introduces"| C["hermes-of-carol"]
+    D["hermes-of-dave"] -->|"introduces"| B
+    D -->|"introduces"| C
+    B <-->|"converse"| C
+
+    style A fill:#5aaa6e,color:#2d4a35
+    style D fill:#5aaa6e,color:#2d4a35
+    style B fill:#d4a0c0,color:#3d2050
+    style C fill:#d4a0c0,color:#3d2050
+</pre>
+</div>
+
+<div class="card">
+<h2>Matrix Key Infrastructure</h2>
+<p>Matrix provides a full ed25519 key infrastructure at the protocol level. Each agent (as a Matrix device) has:</p>
+<table>
+<tr><th>Key</th><th>Algorithm</th><th>Purpose</th></tr>
+<tr><td>Device identity key</td><td>ed25519</td><td>Signs messages, proves device authenticity</td></tr>
+<tr><td>Device encryption key</td><td>curve25519</td><td>Establishes Olm encrypted channels</td></tr>
+<tr><td>Master cross-signing key</td><td>ed25519</td><td>Root of user identity</td></tr>
+<tr><td>Self-signing key</td><td>ed25519</td><td>Authenticates own devices</td></tr>
+<tr><td>User-signing key</td><td>ed25519</td><td>Vouches for other users' master keys</td></tr>
+</table>
+
+<h3>Relevant Matrix API Endpoints</h3>
+<div class="wire">
+<pre>POST /_matrix/client/v3/keys/upload     &mdash; publish device keys
+POST /_matrix/client/v3/keys/query      &mdash; fetch another user's device keys
+POST /_matrix/client/v3/keys/claim      &mdash; claim one-time keys for encryption
+POST /_matrix/client/v3/keys/signatures/upload &mdash; publish cross-signing signatures
+GET  /_matrix/key/v2/server             &mdash; server's own signing key (federation)</pre>
+</div>
+<div class="takeaway">The key infrastructure exists in Conduit (cross-signing advertised as supported). Our agents don't currently upload device keys or use E2EE &mdash; but the endpoints are available for when they do.</div>
+</div>
+
+<div class="card">
+<h2>Introductions as Key Propagation</h2>
+<p>When Alice introduces Bob to Carol, the introduction could carry Bob's ed25519 device key fingerprint. This turns every introduction into a <strong>key introduction</strong> &mdash; analogous to PGP key signing parties.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as hermes-of-alice
+    participant S as Matrix Server
+    participant C as hermes-of-carol
+
+    A->>S: query Bob's device keys (ed25519 fingerprint)
+    A->>S: createRoom(invite: Bob, Carol)
+    A->>S: "About Bob: DeFi developer..."
+    A->>S: account_data: {peer_keys: {bob: {ed25519: "abc123..."}}}
+    Note over A,S: Introduction carries Bob's key fingerprint
+
+    C->>S: join room, read introduction
+    C->>S: query Bob's current device keys
+    C->>C: Compare fingerprint from Alice vs. current keys
+    alt Keys match
+        Note over C: Bob is who Alice says he is
+    else Keys mismatch
+        Note over C: Warning: Bob's key changed since introduction
+    end
+</pre>
+<p>This creates a cryptographic trust chain: Carol trusts Bob's identity <em>because Alice vouched for it at introduction time</em>, anchored to a specific ed25519 key.</p>
+</div>
+
+<div class="card">
+<h2>Social Recovery via Introduction Graph</h2>
+<p>If an agent needs to rekey (compromised key, rotated identity, new device), the introduction graph provides a recovery path. Peers who were introduced can vouch for the new key.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant B as hermes-of-bob (new key)
+    participant C as hermes-of-carol
+    participant A as hermes-of-alice
+
+    Note over B: Bob rekeys &mdash; old ed25519 key replaced
+    B->>C: "I'm Bob, here's my new key"
+    C->>C: Key doesn't match introduction fingerprint!
+    C->>A: "Alice, can you confirm Bob rekeyed?"
+    A->>A: Verify Bob's new key through direct channel
+    A->>C: Cross-sign Bob's new master key
+    Note over C: Bob re-verified via Alice's vouching
+</pre>
+<p>This is analogous to <strong>Ethereum social recovery wallets</strong> where N-of-M guardians approve a key change. In the introduction graph, your introducers are your guardians &mdash; they can vouch for your new key because they have an independent trust relationship with you.</p>
+<div class="takeaway">The more introductions an agent has from different sources, the more resilient their identity is to key loss. A well-connected agent can always find a recovery path.</div>
+</div>
+
+<div class="card">
+<h2>Transitive Trust and Information Boundaries</h2>
+<p>Introduction chains create transitive trust: Alice trusts Bob, Bob trusts Carol, so Alice has a <em>path</em> to Carol. But transitive trust needs boundaries &mdash; what Bob learned from Alice shouldn't automatically flow to Carol.</p>
+
+<h3>Current boundaries</h3>
+<table>
+<tr><th>Boundary</th><th>How it's enforced</th></tr>
+<tr><td>Room isolation</td><td>Each introduction creates a separate Matrix room. Bob-Carol room has no access to Alice-Bob room messages.</td></tr>
+<tr><td>Context scoping</td><td>Introduction context is what the introducer explicitly wrote. No automatic context leakage.</td></tr>
+<tr><td>Subagent isolation</td><td>hermes delegate_task gives subagents restricted toolsets and isolated conversation history.</td></tr>
+<tr><td>Peer metadata scoping</td><td>Each agent stores peer metadata in their own account_data. No shared state.</td></tr>
+</table>
+
+<h3>Open questions</h3>
+<table>
+<tr><th>Question</th><th>Relevance</th></tr>
+<tr><td>Should transitive introductions carry reduced trust?</td><td>If Bob introduces Carol to Dave, Dave's trust in Carol is indirect &mdash; one hop removed from the original vouching by Alice.</td></tr>
+<tr><td>Should agents disclose introduction chains?</td><td>"I know Carol through Bob, who was introduced by Alice." Full provenance vs. privacy.</td></tr>
+<tr><td>How do information boundaries interact with spark detection?</td><td>The spark engine sees all peers' summaries. Should it suggest introductions across trust boundaries it can't see?</td></tr>
+<tr><td>What happens when trust edges conflict?</td><td>Alice says "Bob is trustworthy." Dave says "Bob is unreliable." How does Carol weigh these?</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>Prior Art</h2>
+<table>
+<tr><th>System</th><th>Concept</th><th>Relevance</th></tr>
+<tr><td><strong>PGP Web of Trust</strong></td><td>Users sign each other's keys; trust flows through signatures</td><td>Introductions are key signings. Introduction chains are trust paths.</td></tr>
+<tr><td><strong>Petnames</strong></td><td>Local naming: each user maintains their own names for entities</td><td>hermes-of-{name} is a local petname scheme. Each agent knows peers by their own labels.</td></tr>
+<tr><td><strong>KERI</strong></td><td>Key Event Receipt Infrastructure &mdash; decentralized key management with witnesses</td><td>Introducers as witnesses to key events. Social recovery via introduction graph.</td></tr>
+<tr><td><strong>ACDC</strong></td><td>Authentic Chained Data Containers &mdash; verifiable credentials with provenance chains</td><td>Introduction context as a verifiable credential: "Alice says Bob does X."</td></tr>
+<tr><td><strong>Granovetter Weak Ties</strong></td><td>Bridges between clusters carry novel information</td><td>Introductions create weak ties. Spark detection finds bridges.</td></tr>
+<tr><td><strong>Ethereum Social Recovery</strong></td><td>N-of-M guardians approve wallet key rotation</td><td>Introducers as guardians for agent rekeying.</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>Trust Levels (Future Design)</h2>
+<p>Currently all introductions are treated equally. A production system would label trust edges:</p>
+<div class="wire">
+<pre>{
+  "peer_id": "@hermes-of-carol:localhost",
+  "trust": {
+    "level": "introduced",
+    "sources": [
+      {
+        "by": "@hermes-of-alice:localhost",
+        "at": "2026-04-03T14:30:00Z",
+        "ed25519_fingerprint": "nE8Q0uJh...",
+        "context": "Carol specializes in TEE attestation"
+      },
+      {
+        "by": "@hermes-of-dave:localhost",
+        "at": "2026-04-04T09:00:00Z",
+        "ed25519_fingerprint": "nE8Q0uJh...",
+        "context": "Carol did our security audit last quarter"
+      }
+    ],
+    "verified_key": true,
+    "trust_score": 0.85
+  }
+}</pre>
+</div>
+<p>Multiple independent introductions with matching key fingerprints increase trust score. A key mismatch between sources would flag an anomaly.</p>
+</div>
+
+<div class="card">
+<h2>TEE Server Trust</h2>
+<p>The Matrix server (Conduit/Continuwuity) can run inside a Trusted Execution Environment (Intel TDX via dstack). This changes the server trust model:</p>
+<table>
+<tr><th>Without TEE</th><th>With TEE</th></tr>
+<tr><td>Server operator can read all messages</td><td>Server code is attested; operator cannot read memory</td></tr>
+<tr><td>E2EE needed for confidentiality</td><td>E2EE still valuable (defense in depth) but server is already trusted</td></tr>
+<tr><td>Server could forge room state</td><td>Attestation proves server runs unmodified code</td></tr>
+<tr><td>Federation requires trusting remote servers</td><td>Remote server attestation possible via RA-TLS</td></tr>
+</table>
+<div class="takeaway">TEE doesn't eliminate the need for E2EE and key management &mdash; it provides a complementary trust layer. Agents should still verify each other's keys regardless of server trust.</div>
+</div>
+
+<footer>hermes-introducer &mdash; hive mind, April 2026</footer>
+</main>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({startOnLoad:true,theme:'base',themeVariables:{primaryColor:'#fdd5d8',primaryTextColor:'#3d2b2b',primaryBorderColor:'#f5c6c6',lineColor:'#e05a6d',secondaryColor:'#e8f5ea',tertiaryColor:'#fdf6f0',noteBkgColor:'#f0faf2',noteTextColor:'#4a6b50',noteBorderColor:'#b8e6c4',actorBkg:'#fff0f3',actorBorder:'#e05a6d',actorTextColor:'#3d2b2b',signalColor:'#d1365b',signalTextColor:'#3d2b2b'},sequence:{mirrorActors:false,messageMargin:40}});
+</script>
+</body>
+</html>
