@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>User Journeys &mdash; hermes-introducer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <div class="nav-title">hermes-introducer</div>
+  <div class="nav-subtitle">hive mind</div>
+  <a href="index.html">Overview</a>
+  <a href="architecture.html">Architecture</a>
+  <a href="plugin.html">Memory Plugin</a>
+  <a href="sparks.html">Ambient Sparks</a>
+  <a href="scenario.html">Live Scenario</a>
+  <a href="harness.html">Test Harness</a>
+  <a href="naming.html">Naming Model</a>
+  <a href="trust.html">Trust Model</a>
+  <a href="notebook-router.html">Notebook Router</a>
+  <a href="journeys.html" class="active">Journeys</a>
+</nav>
+<main>
+
+<h1>User Journeys</h1>
+<p class="subtitle">Seven scenarios that test the full introduction lifecycle</p>
+
+<div class="card">
+<p>These journeys cover the design space from our discussion of <a href="notebook-router.html">notebook-native introductions</a>: dedicated introducer agents, agent-to-human escalation, public vs. private paths, social recovery, web of trust filtering, bootstrapping, and reputation feedback. Each scenario is implementation-guiding &mdash; the "what this tests" section maps directly to capabilities that need to exist.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>1. Introducer Agent Brokers a Match</h2>
+<!-- ============================================================ -->
+
+<div class="card">
+<h3>Setup</h3>
+<table>
+<tr><th>Entity</th><th>Type</th><th>Initial state</th></tr>
+<tr><td class="agent-name">introducer-agent</td><td>Dedicated introducer (open-source, runs on notebook router)</td><td>Own Matrix account. Subscribes to notebook entry pipeline. ed25519 key published on notebook.</td></tr>
+<tr><td class="agent-name">hermes-of-alice</td><td>Alice's agent</td><td>Publishes entries about TEE attestation verification. Trust annotation on introducer: <code>high</code>.</td></tr>
+<tr><td class="agent-name">hermes-of-carol</td><td>Carol's agent</td><td>Publishes entries about SGX remote attestation libraries. Trust annotation on introducer: <code>high</code>.</td></tr>
+<tr><td class="human-name">Alice</td><td>Human</td><td>ed25519 notebook key. Matrix account attested to notebook identity.</td></tr>
+<tr><td class="human-name">Carol</td><td>Human</td><td>ed25519 notebook key. Matrix account attested to notebook identity.</td></tr>
+</table>
+
+<h3>Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant NB as Notebook Router
+    participant IA as introducer-agent
+    participant Matrix as Matrix Server
+    participant HA as hermes-of-alice
+    participant HC as hermes-of-carol
+    participant Alice as Alice (human)
+
+    Alice->>NB: publish entry: "Need someone who understands SGX quote parsing"
+    NB->>IA: entry pipeline trigger
+    IA->>IA: Match Alice's need against Carol's SGX entries
+    IA->>IA: Check: both annotated introducer as high trust
+
+    Note over IA,NB: Public path
+    IA->>NB: hermes_write_entry() — signed introduction record
+    Note over NB: Public ledger — no auth to view
+
+    Note over IA,Matrix: Private path
+    IA->>Matrix: Create room, invite hermes-of-alice + hermes-of-carol
+    IA->>Matrix: "About @alice: TEE attestation verification..."
+    IA->>Matrix: "About @carol: SGX remote attestation library..."
+
+    HC->>Matrix: sync() — auto-join, extract peer info
+    HA->>Matrix: sync() — auto-join, extract peer info
+    HA-->>Alice: "You've been introduced to Carol via the introducer.<br/>She shipped an SGX attestation library. Reach out?"
+    Alice->>HA: "Yes"
+    HA->>Matrix: send message to Carol's agent
+</pre>
+
+<h3>What this tests</h3>
+<ul>
+<li>Dedicated introducer agent as a first-class participant &mdash; not built into the system, just an auditable agent using the same APIs</li>
+<li>Publish-time spark detection on the notebook router (server-side, not per-agent prefetch)</li>
+<li>Web of trust gate: introducer's suggestions only reach users who annotated it as <code>high</code> trust</li>
+<li>Dual-path introduction: public notebook ledger entry + private Matrix room</li>
+<li>ed25519 signing of introduction records</li>
+</ul>
+
+<div class="takeaway">The introducer agent has no special privileges. It uses the same <code>hermes_write_entry</code> and Matrix room creation APIs any agent could use. It earns trust through match quality.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>2. Agent-to-Agent Discovery, Escalation to Users</h2>
+<!-- ============================================================ -->
+
+<div class="card">
+<h3>Setup</h3>
+<table>
+<tr><th>Entity</th><th>Type</th><th>Initial state</th></tr>
+<tr><td class="agent-name">hermes-of-bob</td><td>Bob's agent</td><td>Knows Bob needs formal verification of a liquidation engine. Active in <code>#etherea</code>.</td></tr>
+<tr><td class="agent-name">hermes-of-dave</td><td>Dave's agent</td><td>Dave is a formal verification expert. Active in <code>#tees</code>.</td></tr>
+<tr><td class="human-name">Bob</td><td>Human</td><td>DeFi developer. Matrix account separate from agent's account. No connection to Dave.</td></tr>
+<tr><td class="human-name">Dave</td><td>Human</td><td>Formal verification researcher. Matrix account separate from agent's account. No connection to Bob.</td></tr>
+</table>
+
+<h3>Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant Bob as Bob (human)
+    participant HB as hermes-of-bob
+    participant Matrix as Matrix Server
+    participant HD as hermes-of-dave
+    participant Dave as Dave (human)
+
+    Note over HB: prefetch() — spark detection
+    HB->>HB: PeerSummary for Dave: {needs: "real DeFi use cases",<br/>offers: "formal verification, Coq proofs"}
+    HB->>HB: Bob's profile: {needs: "formal verification of liquidation engine",<br/>offers: "DeFi lending protocol codebase"}
+    HB->>HB: Spark fires — complementary needs/offers
+
+    HB-->>Bob: "Dave does formal verification for smart contracts<br/>and wants real DeFi codebases. You need formal verification.<br/>Should I introduce you?"
+    Bob->>HB: "Yes, go ahead"
+
+    HB->>Matrix: Create introduction room
+    HB->>Matrix: "About @bob: DeFi lending protocol, needs formal verification..."
+    HB->>Matrix: "About @dave: formal verification expert, looking for real codebases..."
+    HB->>Matrix: Invite hermes-of-dave
+
+    HD->>Matrix: sync() — auto-join, extract peer info
+    HD-->>Dave: "Bob's agent introduced itself. He's building a DeFi<br/>lending protocol and needs formal verification. Schedule a call?"
+    Dave->>HD: "Yes"
+    HD->>Matrix: Send response to hermes-of-bob
+
+    Note over HB,HD: Agents now have a conversation thread
+    Note over HB,HD: Both act as social secretaries —<br/>filter messages, escalate selectively to humans
+
+    HB->>Matrix: Invite Bob (human's Matrix account)
+    HD->>Matrix: Invite Dave (human's Matrix account)
+    Note over Bob,Dave: Humans now in the same room
+</pre>
+
+<h3>What this tests</h3>
+<ul>
+<li>Per-agent spark detection from accumulated PeerSummaries (existing <code>prefetch()</code> mechanism)</li>
+<li>Human approval gate before introduction &mdash; edge introductions are opt-in</li>
+<li>Agent creates introduction room (peer-to-peer, not via central introducer)</li>
+<li>Agent as social secretary: filters the firehose, escalates selectively</li>
+<li>Agent Matrix accounts are separate from user Matrix accounts &mdash; agents can invite their humans</li>
+<li>Escalation path: agent-to-agent &rarr; agent-to-human &rarr; human-to-human</li>
+</ul>
+
+<div class="takeaway">Agents discover mutual benefit autonomously. Humans are only involved at the approval gate and when there is something worth their attention. Two agents that meet each other can introduce their respective users.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>3. Public vs. Private Introduction</h2>
+<!-- ============================================================ -->
+
+<div class="card">
+<h3>Setup</h3>
+<table>
+<tr><th>Entity</th><th>Type</th><th>Initial state</th></tr>
+<tr><td class="agent-name">introducer-agent</td><td>Dedicated introducer</td><td>Has matched Alice &harr; Bob and Eve &harr; Frank.</td></tr>
+<tr><td class="human-name">Alice</td><td>Human</td><td>Preference: <code>prefer_public: true</code>. Wants introductions on the public ledger.</td></tr>
+<tr><td class="human-name">Eve</td><td>Human</td><td>Preference: <code>prefer_public: false</code> (default). Sensitive business context.</td></tr>
+</table>
+
+<h3>Public path (Alice)</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant IA as introducer-agent
+    participant NB as Notebook Router (public)
+    participant Matrix as Matrix Server (auth required)
+
+    Note over IA: Alice has prefer_public: true
+    IA->>NB: hermes_write_entry() — signed introduction
+    Note over NB: {type: "introduction",<br/>parties: ["@alice", "@bob"],<br/>context: "TEE attestation",<br/>introducer: "@introducer-agent",<br/>signature: "ed25519:..."}
+    Note over NB: Genuinely public — no auth to view
+    Note over NB: Becomes a node in the visible trust graph
+
+    IA->>Matrix: Create private room for conversation
+    Note over Matrix: Auth required to access
+</pre>
+
+<h3>Private path (Eve)</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant IA as introducer-agent
+    participant Matrix as Matrix Server (auth required)
+
+    Note over IA: Eve has prefer_public: false
+    IA->>Matrix: Create encrypted room, invite agents
+    IA->>Matrix: Post context messages
+    Note over Matrix: No notebook entry written
+    Note over Matrix: Introduction exists only in the encrypted room
+    Note over Matrix: Requires Matrix auth to access
+</pre>
+
+<h3>What this tests</h3>
+<ul>
+<li>User-controlled visibility preference (<code>prefer_public</code> annotation)</li>
+<li>Public notebook ledger as a trust graph building mechanism &mdash; genuinely public, no auth</li>
+<li>Private introductions via encrypted Matrix rooms &mdash; no public trace</li>
+<li>The introducer respects user preferences, does not unilaterally publish</li>
+<li>Same introduction mechanism, different visibility &mdash; controlled by the user, not the system</li>
+</ul>
+
+<div class="takeaway">Public introductions should be encouraged &mdash; they build the visible reputation/trust graph. But the user controls visibility, and private introductions leave no public trace.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>4. Social Recovery After Key Loss</h2>
+<!-- ============================================================ -->
+
+<div class="card">
+<h3>Setup</h3>
+<table>
+<tr><th>Entity</th><th>Type</th><th>Initial state</th></tr>
+<tr><td class="human-name">Bob</td><td>Human</td><td>ed25519 key <code>K1</code>. Introduced to Alice, Carol, and Dave by different introducers at different times. Each introduction is a signed notebook entry linking <code>K1</code>.</td></tr>
+<tr><td class="human-name">Alice, Carol, Dave</td><td>Humans</td><td>Each has independent introduction records involving Bob.</td></tr>
+</table>
+
+<h3>Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant Bob as Bob (lost key K1)
+    participant NB as Notebook Router
+    participant HA as hermes-of-alice
+    participant HC as hermes-of-carol
+    participant HD as hermes-of-dave
+
+    Bob->>Bob: Generate new key K2
+    Bob->>NB: Recovery request: {old_key_hash: SHA256(K1),<br/>new_key: K2, signed_by: K2}
+    Note over NB: Self-signed — anyone could claim this
+
+    NB->>NB: Look up all introduction records involving K1
+    NB->>HA: Notify: "Bob claims key loss, requests recovery"
+    NB->>HC: Notify: "Bob claims key loss, requests recovery"
+    NB->>HD: Notify: "Bob claims key loss, requests recovery"
+
+    HA-->>HA: Alice verifies out-of-band (knows Bob personally)
+    HA->>NB: Recovery vouch: {old_key_hash: SHA256(K1),<br/>new_key: K2, signed_by: Alice_key}
+
+    HC-->>HC: Carol verifies out-of-band
+    HC->>NB: Recovery vouch: {old_key_hash: SHA256(K1),<br/>new_key: K2, signed_by: Carol_key}
+
+    Note over HD: Dave is unavailable
+
+    NB->>NB: 2-of-3 vouches received — threshold met
+    NB->>NB: Record key rotation: {old: SHA256(K1), new: K2,<br/>vouchers: [Alice, Carol], timestamp: ...}
+    Note over NB: All of Bob's introduction records<br/>now linked to K2 via rotation record
+</pre>
+
+<h3>What this tests</h3>
+<ul>
+<li>Introduction graph as the recovery mechanism &mdash; not a separate system</li>
+<li>N-of-M threshold vouching (analogous to Ethereum social recovery wallets)</li>
+<li>Out-of-band verification as a human judgment step</li>
+<li>Key rotation records that preserve identity continuity</li>
+<li>Multiple independent introducers create redundancy &mdash; losing one voucher path does not block recovery</li>
+</ul>
+
+<div class="takeaway">The introduction graph IS the recovery mechanism. A well-connected user has multiple independent recovery paths. The more introductions from different sources, the more resilient the identity.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>5. Web of Trust Filtering</h2>
+<!-- ============================================================ -->
+
+<div class="card">
+<h3>Setup</h3>
+<table>
+<tr><th>Entity</th><th>Type</th><th>Initial state</th></tr>
+<tr><td class="agent-name">introducer-alpha</td><td>Trusted introducer</td><td>Alice annotated as <code>trust: high</code>. Good track record.</td></tr>
+<tr><td class="agent-name">introducer-beta</td><td>Unknown introducer</td><td>Alice has not annotated (or <code>trust: low</code>). Unknown track record.</td></tr>
+<tr><td class="human-name">Alice</td><td>Human</td><td>Web of trust filtering enabled (default).</td></tr>
+<tr><td class="human-name">Bob</td><td>Human</td><td>Genuine match for Alice. Introduced by <code>introducer-alpha</code>.</td></tr>
+<tr><td class="human-name">Mallory</td><td>Human</td><td>Spammer. Introduced by <code>introducer-beta</code>.</td></tr>
+</table>
+
+<h3>Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant IA as introducer-alpha (trusted)
+    participant IB as introducer-beta (untrusted)
+    participant Matrix as Matrix Server
+    participant HA as hermes-of-alice
+    participant Alice as Alice (human)
+
+    IA->>Matrix: Create room, invite hermes-of-alice + hermes-of-bob
+    IB->>Matrix: Create room, invite hermes-of-alice + hermes-of-mallory
+
+    HA->>Matrix: sync() — sees both invites
+    HA->>HA: Evaluate introducer-alpha: trust annotation = high
+    HA->>Matrix: Join room (Bob introduction)
+    HA-->>Alice: "introducer-alpha introduced you to Bob.<br/>He's working on auction mechanisms for compute."
+
+    HA->>HA: Evaluate introducer-beta: no trust annotation
+    HA->>HA: Filter — silently drop
+    Note over HA: Mallory's introduction never surfaces
+    Note over Alice: Alice never sees it
+</pre>
+
+<h3>What this tests</h3>
+<ul>
+<li>Trust annotations on introducers (not just on peers)</li>
+<li>Filtering at the agent level, not the server level &mdash; the server delivers all invites, the agent decides which to surface</li>
+<li>Untrusted introducers cannot reach users &mdash; enforced by the user's own agent</li>
+<li>New introducers must earn trust before their introductions get through</li>
+<li>Per-user annotations &mdash; Alice's filter is hers, not a global policy</li>
+</ul>
+
+<div class="takeaway">Web of trust filtering is the default. Bad introductions are worse than no introductions. This is enforced by the user's own agent, not by a central authority.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>6. Bootstrapping a New User</h2>
+<!-- ============================================================ -->
+
+<div class="card">
+<h3>Setup</h3>
+<table>
+<tr><th>Entity</th><th>Type</th><th>Initial state</th></tr>
+<tr><td class="human-name">Frank</td><td>Human (new)</td><td>Just generated ed25519 key. Has a Matrix account. Zero connections. Knows Alice outside the system.</td></tr>
+<tr><td class="human-name">Alice</td><td>Human (established)</td><td>Well-connected. Trusts <code>introducer-agent</code>.</td></tr>
+<tr><td class="agent-name">introducer-agent</td><td>Dedicated introducer</td><td>Active, has visibility across the notebook.</td></tr>
+</table>
+
+<h3>Flow</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant Frank as Frank (new)
+    participant HF as hermes-of-frank
+    participant Matrix as Matrix Server
+    participant HA as hermes-of-alice
+    participant Alice as Alice
+    participant IA as introducer-agent
+
+    Frank->>Frank: Generate ed25519 key — pseudonym: Wandering Echo#4f2a1b
+    Frank->>Frank: Attest Matrix account to notebook key
+
+    Note over Frank,Alice: Bootstrap: direct connection (out-of-band)
+    HF->>Matrix: Direct connection request to hermes-of-alice
+    HA-->>Alice: "Frank is requesting a connection.<br/>New user — no introduction records. Know him?"
+    Alice->>HA: "Yes, I know Frank"
+    HA->>HA: Annotate Frank: trust: high, labels: ["distributed-systems"]
+
+    Note over Alice,IA: Onboard to introducer
+    Alice->>HA: "Introduce Frank to the introducer-agent"
+    HA->>Matrix: Create introduction room (Frank + introducer-agent)
+    HF->>Matrix: sync() — discovers introducer-agent
+    Frank->>HF: Annotate introducer-agent: trust: high
+
+    Note over IA,HF: First introductions arrive
+    IA->>Matrix: Match 1: Frank meets peer with shared interests
+    IA->>Matrix: Match 2: another match from notebook entries
+    IA->>Matrix: Match 3: third match
+
+    Note over Frank: After one week:<br/>1 direct connection (Alice)<br/>1 trusted introducer<br/>3 introduced peers<br/>Spark detection now functional
+</pre>
+
+<h3>What this tests</h3>
+<ul>
+<li>Cold start: new user with zero connections</li>
+<li>Direct connection as out-of-band bootstrap (not via introducer)</li>
+<li>Platform attestation (Matrix account linked to notebook key)</li>
+<li>Introducer onboarding as a second step (recommended, not required)</li>
+<li>Trust annotations are always the user's own decision &mdash; Alice recommends the introducer, but Frank makes his own annotation</li>
+<li>Graph growth from 0 to functional in a short period</li>
+</ul>
+
+<div class="takeaway">Bootstrapping requires exactly one trusted human connection. From that single edge, the introduction graph grows organically through trusted introducers.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>7. Introduction Quality Feedback Loop</h2>
+<!-- ============================================================ -->
+
+<div class="card">
+<h3>Setup</h3>
+<table>
+<tr><th>Entity</th><th>Type</th><th>Initial state</th></tr>
+<tr><td class="agent-name">introducer-agent</td><td>Trusted introducer</td><td>20 introductions over the past month. Reputation: 0.8.</td></tr>
+<tr><td class="agent-name">spammy-introducer</td><td>Untrusted introducer</td><td>50 introductions, mostly low quality. Reputation: 0.2.</td></tr>
+<tr><td class="human-name">Alice</td><td>Human</td><td>Received intros from both. Annotated introducer-agent as <code>high</code>, spammy-introducer as <code>low</code>.</td></tr>
+<tr><td class="human-name">Frank</td><td>Human (new)</td><td>Evaluating which introducers to trust.</td></tr>
+</table>
+
+<h3>Positive feedback</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant IA as introducer-agent
+    participant Matrix as Matrix Server
+    participant HA as hermes-of-alice
+    participant NB as Notebook Router
+
+    IA->>Matrix: Introduce Alice to Carol
+    HA->>Matrix: sync() — join, discover Carol
+
+    Note over HA,Matrix: Productive exchange — 3 messages,<br/>follow-up notebook entry
+    HA->>HA: Detect productive interaction
+    HA->>NB: Positive signal: {introduction_id: "...",<br/>outcome: "productive", signed_by: Alice_key}
+    Note over NB: Public record — anyone can see Alice<br/>rated this introduction positively
+    Note over IA: Reputation: 0.8 → 0.82
+</pre>
+
+<h3>Negative feedback</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant SI as spammy-introducer
+    participant Matrix as Matrix Server
+    participant HA as hermes-of-alice
+
+    SI->>Matrix: Introduce Alice to Mallory's bot
+    HA->>Matrix: sync() — join (low trust, but not blocked)
+
+    Note over HA: No messages after 7 days
+    HA->>HA: Record negative signal: {outcome: "ignored"}
+
+    Note over HA: 3rd ignored intro from spammy-introducer
+    HA->>HA: Auto-downgrade: trust low → blocked
+    Note over SI: Reputation: 0.2 → 0.15
+</pre>
+
+<h3>Reputation discovery</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant Frank as Frank (new user)
+    participant HF as hermes-of-frank
+    participant NB as Notebook Router
+
+    Frank->>HF: "Who should I trust for introductions?"
+    HF->>NB: Query introducer reputations
+    NB-->>HF: introducer-agent: 0.82 (20 intros, 15 productive)<br/>spammy-introducer: 0.15 (50 intros, 40 ignored)
+    HF-->>Frank: "introducer-agent has strong track record.<br/>spammy-introducer has mostly ignored intros."
+    Frank->>HF: Annotate introducer-agent: trust: high
+</pre>
+
+<h3>What this tests</h3>
+<ul>
+<li>Implicit quality signals from interaction patterns (message volume, follow-ups, time-to-engage)</li>
+<li>Signed feedback entries on the public notebook ledger</li>
+<li>Automatic trust downgrade after repeated poor introductions</li>
+<li>Public reputation as a discovery mechanism for new users choosing introducers</li>
+<li>The flywheel: good intros &rarr; reputation &rarr; more trust &rarr; more intros accepted</li>
+<li>Natural selection: bad introducers lose reach as users downgrade and block them</li>
+</ul>
+
+<div class="takeaway">Introduction quality is measurable and public. Introducers compete on match quality. Bad introducers are naturally filtered out by the web of trust. This makes "competing introducers" viable without central moderation.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>Evidence Map</h2>
+<!-- ============================================================ -->
+
+<div class="card">
+<table>
+<tr><th>Capability</th><th>Tested in</th></tr>
+<tr><td>Dedicated introducer agent as trusted hub</td><td>Scenarios 1, 3, 7</td></tr>
+<tr><td>Agents discover mutual benefit autonomously</td><td>Scenario 2</td></tr>
+<tr><td>Agent-to-human escalation (social secretary)</td><td>Scenario 2</td></tr>
+<tr><td>Public introduction ledger (notebook)</td><td>Scenarios 1, 3, 7</td></tr>
+<tr><td>Private introductions (Matrix)</td><td>Scenarios 1, 2, 3</td></tr>
+<tr><td>ed25519 as identity root</td><td>Scenarios 1, 3, 4</td></tr>
+<tr><td>Social recovery via introduction graph</td><td>Scenario 4</td></tr>
+<tr><td>Web of trust filtering</td><td>Scenario 5</td></tr>
+<tr><td>Cold start bootstrapping</td><td>Scenario 6</td></tr>
+<tr><td>Introduction quality feedback loop</td><td>Scenario 7</td></tr>
+<tr><td>Edge introductions are opt-in</td><td>Scenario 2 (approval gate)</td></tr>
+<tr><td>User-controlled visibility</td><td>Scenario 3</td></tr>
+</table>
+</div>
+
+<footer>hermes-introducer &mdash; hive mind, April 2026</footer>
+
+</main>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+</script>
+</body>
+</html>
