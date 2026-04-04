@@ -152,8 +152,7 @@ MATRIX_USER_ID=@hermes-of-alice:localhost
 MATRIX_ACCESS_TOKEN=syt_aGVybWVzLW9mLWFsaWNl_...</pre>
 </div>
 <p>All three env vars must be set for <code>is_available()</code> to return true. Without them, the agent falls back to built-in memory only.</p>
-<p class="note"><strong>Transport:</strong> All messages are plaintext (no E2EE). The Matrix server can read all peer conversations. See <a href="trust.html">Trust Model</a>
-  <a href="notebook-router.html">Notebook Router</a> for the E2EE roadmap.</p>
+<p class="note"><strong>Transport:</strong> E2EE enabled via matrix-nio (Olm/Megolm). Introduction rooms are created with <code>m.room.encryption</code>. See <a href="trust.html">Trust Model</a>.</p>
 </div>
 
 <div class="card">

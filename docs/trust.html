@@ -71,34 +71,35 @@ GET  /_matrix/key/v2/server             &mdash; server's own signing key (federa
 </div>
 
 <div class="card">
-<h2>Current Transport Security</h2>
-<p>The hive mind prototype uses <strong>plaintext Matrix messaging</strong>. No end-to-end encryption is enabled.</p>
+<h2>Transport Security</h2>
+<p>The hive mind uses <strong>E2EE via matrix-nio</strong> (Olm/Megolm) on Continuwuity.</p>
 <table>
 <tr><th>What we do</th><th>What it means</th></tr>
-<tr><td>Rooms created without <code>m.room.encryption</code></td><td>Messages are stored and transmitted as plaintext</td></tr>
-<tr><td>Messages sent as plain <code>m.room.message</code> events</td><td>The Matrix server can read all message content</td></tr>
-<tr><td>No Olm session setup or device verification</td><td>No key exchange happens between agents</td></tr>
-<tr><td>No device key upload (<code>/keys/upload</code> not called)</td><td>ed25519 device keys exist but are unused</td></tr>
+<tr><td>Rooms created with <code>m.room.encryption</code></td><td>All introduction rooms are encrypted by default (m.megolm.v1.aes-sha2)</td></tr>
+<tr><td>matrix-nio with <code>encryption_enabled=True</code></td><td>Messages auto-encrypted on send, auto-decrypted on receive</td></tr>
+<tr><td>Device keys uploaded after first sync</td><td>Each agent publishes its ed25519 + curve25519 keys</td></tr>
+<tr><td>Crypto store (SQLite) per agent</td><td>Olm sessions and keys persist across restarts</td></tr>
+<tr><td><code>ignore_unverified_devices=True</code></td><td>Agents encrypt to all devices without manual verification (prototype simplification)</td></tr>
 </table>
-<p>This is a deliberate prototype simplification. Confidentiality currently depends entirely on <strong>trusting the server</strong> (or running it in a TEE). The ed25519 keys discussed below are the path to fixing this &mdash; they're already present in the Matrix infrastructure, just not wired up.</p>
 <pre class="mermaid">
 graph LR
-    B["hermes-of-bob"] -->|"plaintext HTTP"| S["Conduit Server"]
-    S -->|"plaintext HTTP"| C["hermes-of-carol"]
-    S -.->|"can read all messages"| S
+    B["hermes-of-bob"] -->|"E2EE (Megolm)"| S["Continuwuity Server"]
+    S -->|"E2EE (Megolm)"| C["hermes-of-carol"]
+    S -.->|"cannot read messages"| S
 
-    style S fill:#fdd5d8,color:#3d2b2b
+    style S fill:#5aaa6e,color:#2d4a35
     style B fill:#d4a0c0,color:#3d2050
     style C fill:#d4a0c0,color:#3d2050
 </pre>
-<h3>Path to E2EE</h3>
+<h3>Remaining: Device Verification</h3>
+<p>Currently agents auto-trust all devices (<code>ignore_unverified_devices=True</code>). A production system would verify device keys via introductions:</p>
 <ol>
-<li><strong>Upload device keys</strong> via <code>/keys/upload</code> &mdash; each agent publishes its ed25519 + curve25519 keys</li>
-<li><strong>Enable room encryption</strong> via <code>m.room.encryption</code> state event on room creation</li>
-<li><strong>Establish Olm sessions</strong> via <code>/keys/claim</code> &mdash; agents exchange one-time keys for encrypted channels</li>
+<li><strong>Introducer queries both peers' device keys</strong> via <code>/keys/query</code></li>
+<li><strong>Carries fingerprints in introduction context</strong> alongside "About @peer: ..." messages</li>
+<li><strong>Peers compare fingerprints</strong> from introducer vs. actual device keys</li>
 <li><strong>Cross-sign via introductions</strong> &mdash; the introducer signs both peers' master keys, creating a trust chain</li>
 </ol>
-<div class="takeaway">The gap between "no E2EE" and "full E2EE with trust chains" is a wiring problem, not an infrastructure problem. Matrix provides all the primitives; introductions provide the trust model for key verification.</div>
+<div class="takeaway">E2EE is active. The remaining gap is <strong>device verification</strong> &mdash; currently all devices are trusted. Introductions provide the natural trust model for verifying keys.</div>
 </div>
 
 <div class="card">
