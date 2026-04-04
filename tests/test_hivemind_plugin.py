@@ -1,4 +1,4 @@
-import pytest, pytest_asyncio, aiohttp, json, os, sys, uuid
+import pytest, pytest_asyncio, aiohttp, json, os, sys, uuid, tempfile
 from unittest.mock import patch, MagicMock
 from introducer import MatrixIntroducer
 
@@ -9,12 +9,12 @@ from hivemind import (
     SUMMARY_KEY, SPARKS_KEY, ALL_TOOLS,
 )
 from matrix_backend import MatrixBackend
+from conftest import HOMESERVER, register_user
 
 pytestmark = pytest.mark.asyncio
 
 
 def _make_provider(user_id, access_token):
-    """Create and initialize a provider outside the async test event loop."""
     provider = HiveMindProvider()
     with patch.dict(os.environ, {
         "MATRIX_HOMESERVER": HOMESERVER,
@@ -23,27 +23,6 @@ def _make_provider(user_id, access_token):
     }):
         provider.initialize(session_id="test")
     return provider
-
-HOMESERVER = "http://localhost:6167"
-PASSWORD = "testpass"
-
-
-async def register_user(session, username):
-    async with session.post(f"{HOMESERVER}/_matrix/client/v3/register", json={
-        "username": username, "password": PASSWORD,
-        "auth": {"type": "m.login.dummy"},
-    }) as resp:
-        data = await resp.json()
-        if "access_token" in data:
-            return data["user_id"], data["access_token"]
-    async with session.post(f"{HOMESERVER}/_matrix/client/v3/login", json={
-        "type": "m.login.password",
-        "identifier": {"type": "m.id.user", "user": username},
-        "password": PASSWORD,
-    }) as resp:
-        data = await resp.json()
-        assert "access_token" in data, f"login failed: {data}"
-        return data["user_id"], data["access_token"]
 
 
 @pytest_asyncio.fixture
@@ -68,6 +47,7 @@ async def introduced(session):
         bob_id, carol_id,
         "Bob builds DeFi protocols and needs a security audit",
         "Carol specializes in smart contract auditing",
+        encrypted=False,
     )
     await introducer.close()
     return {"alice": alice, "bob": bob, "carol": carol, "room_id": result["room_id"]}
@@ -201,7 +181,7 @@ async def test_handle_introduce_peers(introduced, session):
 
     alice_id, alice_tok = introduced["alice"]
     intro = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    await intro.introduce(bob_id, dave_id, "Bob does DeFi", "Dave does frontend")
+    await intro.introduce(bob_id, dave_id, "Bob does DeFi", "Dave does frontend", encrypted=False)
     await intro.close()
 
     provider = _make_provider(bob_id, bob_tok)
@@ -217,7 +197,7 @@ async def test_handle_introduce_peers(introduced, session):
 
 async def test_dismiss_spark(introduced):
     bob_id, bob_tok = introduced["bob"]
-    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     try:
         await backend._put_global_account_data(SPARKS_KEY, {"sparks": [{
             "id": "test", "peer_a": "alice", "peer_b": "carol",

@@ -1,23 +1,20 @@
-# Isolated test: 3 hermes agents + Conduit Matrix server
-#
-# Humans: Alice, Bob, Carol (operators)
-# Agents: hermes-of-alice, hermes-of-bob, hermes-of-carol
+# Isolated test: 3 hermes agents + Continuwuity Matrix server
 #
 # Build:  docker compose -f docker-compose.agent-test.yml build
-# Start:  docker compose -f docker-compose.agent-test.yml up conduit -d
+# Start:  docker compose -f docker-compose.agent-test.yml up continuwuity -d
 # Setup:  python3 agent-test/scenario.py
 # Run:    docker compose -f docker-compose.agent-test.yml --env-file agent-test/.env.agents up -d
 # Chat:   docker exec -it hermes-introducer-hermes-of-bob-1 hermes chat
 
 services:
-  conduit:
-    image: matrixconduit/matrix-conduit:latest
+  continuwuity:
+    image: ghcr.io/continuwuity/continuwuity:latest
     ports: ["6167:6167"]
     volumes:
-      - ./conduit.toml:/etc/conduit.toml
-      - conduit-agent-test:/var/lib/conduit
+      - ./continuwuity.toml:/etc/conduwuit.toml
+      - continuwuity-agent-test:/var/lib/conduwuit
     environment:
-      CONDUIT_CONFIG: /etc/conduit.toml
+      CONDUWUIT_CONFIG: /etc/conduwuit.toml
 
   hermes-of-alice: &agent
     build:
@@ -27,10 +24,10 @@ services:
       HERMES_MODEL: zai/glm-4.7
       GLM_API_KEY: ${ZAI_API_KEY}
       GLM_BASE_URL: https://api.z.ai/api/coding/paas/v4
-      MATRIX_HOMESERVER: http://conduit:6167
+      MATRIX_HOMESERVER: http://continuwuity:6167
       MATRIX_USER_ID: ${ALICE_USER_ID}
       MATRIX_ACCESS_TOKEN: ${ALICE_ACCESS_TOKEN}
-    depends_on: [conduit]
+    depends_on: [continuwuity]
     stdin_open: true
     tty: true
 
@@ -49,4 +46,4 @@ services:
       MATRIX_ACCESS_TOKEN: ${CAROL_ACCESS_TOKEN}
 
 volumes:
-  conduit-agent-test:
+  continuwuity-agent-test:

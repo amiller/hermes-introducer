@@ -1,31 +1,9 @@
-import pytest, pytest_asyncio, aiohttp, uuid
+import pytest, pytest_asyncio, aiohttp, uuid, tempfile
 from introducer import MatrixIntroducer
 from matrix_backend import MatrixBackend
+from conftest import HOMESERVER, register_user
 
 pytestmark = pytest.mark.asyncio
-
-HOMESERVER = "http://localhost:6167"
-PASSWORD = "testpass"
-
-
-# --- Helpers (reused from test_introducer.py) ---
-
-async def register_user(session, username):
-    async with session.post(f"{HOMESERVER}/_matrix/client/v3/register", json={
-        "username": username, "password": PASSWORD,
-        "auth": {"type": "m.login.dummy"},
-    }) as resp:
-        data = await resp.json()
-        if "access_token" in data:
-            return data["user_id"], data["access_token"]
-    async with session.post(f"{HOMESERVER}/_matrix/client/v3/login", json={
-        "type": "m.login.password",
-        "identifier": {"type": "m.id.user", "user": username},
-        "password": PASSWORD,
-    }) as resp:
-        data = await resp.json()
-        assert "access_token" in data, f"login failed: {data}"
-        return data["user_id"], data["access_token"]
 
 async def send_message(session, token, room_id, body):
     txn = uuid.uuid4().hex
@@ -65,6 +43,7 @@ async def introduced(agents, session):
         "Bob is a Rust developer who reviews smart contracts",
         "Carol specializes in TEE attestation and security audits",
         room_name="Test Introduction",
+        encrypted=False,
     )
     await introducer.close()
     return {**agents, "room_id": result["room_id"]}
@@ -77,7 +56,7 @@ async def test_auto_join_and_discover_peer(introduced):
     bob_id, bob_tok = introduced["bob"]
     carol_id, _ = introduced["carol"]
 
-    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     try:
         peers = await backend.get_peers()
         assert len(peers) >= 1, f"Expected at least 1 peer, got {peers}"
@@ -93,7 +72,7 @@ async def test_peer_context_extracted(introduced):
     carol_id, carol_tok = introduced["carol"]
     bob_id, _ = introduced["bob"]
 
-    backend = MatrixBackend(HOMESERVER, carol_id, carol_tok)
+    backend = MatrixBackend(HOMESERVER, carol_id, carol_tok, store_path=tempfile.mkdtemp())
     try:
         peers = await backend.get_peers()
         bob_peer = next(p for p in peers if bob_id.lstrip("@").split(":")[0] in p["name"])
@@ -108,7 +87,7 @@ async def test_introduced_by_is_alice(introduced):
     bob_id, bob_tok = introduced["bob"]
     alice_id, _ = introduced["alice"]
 
-    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     try:
         peers = await backend.get_peers()
         assert len(peers) >= 1
@@ -122,7 +101,7 @@ async def test_peer_id_format(introduced):
     """Peer ID is opaque (no @ prefix, no : separator visible)."""
     bob_id, bob_tok = introduced["bob"]
 
-    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     try:
         peers = await backend.get_peers()
         assert len(peers) >= 1
@@ -149,7 +128,7 @@ async def test_check_messages_from_peer(introduced, session):
     await send_message(session, carol_tok, room_id, "Hey Bob, happy to help with your audit!")
 
     # Bob discovers Carol, then checks messages
-    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     try:
         peers = await backend.get_peers()
         carol_name = carol_id.lstrip("@").split(":")[0]
@@ -175,7 +154,7 @@ async def test_no_matrix_ids_in_messages(introduced, session):
 
     await send_message(session, carol_tok, room_id, "Test message")
 
-    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     try:
         await backend.get_peers()
         carol_name = carol_id.lstrip("@").split(":")[0]
@@ -197,11 +176,11 @@ async def test_multiple_introductions(agents, session):
     dave_id, dave_tok = await register_user(session, f"sa_dave_{tag}")
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security")
-    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend")
+    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security", encrypted=False)
+    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend", encrypted=False)
     await introducer.close()
 
-    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     try:
         peers = await backend.get_peers()
         assert len(peers) >= 2, f"Expected 2+ peers, got {peers}"
@@ -219,7 +198,7 @@ async def test_get_peer_info(introduced):
     bob_id, bob_tok = introduced["bob"]
     carol_id, _ = introduced["carol"]
 
-    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     try:
         peers = await backend.get_peers()
         carol_name = carol_id.lstrip("@").split(":")[0]
@@ -248,8 +227,8 @@ async def test_send_to_peer(introduced, session):
         pass
 
     # Bob discovers Carol, then sends
-    bob_backend = MatrixBackend(HOMESERVER, bob_id, bob_tok)
-    carol_backend = MatrixBackend(HOMESERVER, carol_id, carol_tok)
+    bob_backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
+    carol_backend = MatrixBackend(HOMESERVER, carol_id, carol_tok, store_path=tempfile.mkdtemp())
     try:
         await bob_backend.get_peers()
         carol_name = carol_id.lstrip("@").split(":")[0]
@@ -278,12 +257,12 @@ async def test_introduce_peers_creates_room(agents, session):
 
     # Alice introduces Bob↔Carol and Bob↔Dave
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security")
-    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend")
+    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security", encrypted=False)
+    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend", encrypted=False)
     await introducer.close()
 
     # Bob discovers peers, then introduces Carol↔Dave
-    bob_b = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    bob_b = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     try:
         await bob_b.get_peers()
         meta_c = bob_b.get_peer_meta(carol_id.lstrip("@").split(":")[0])
@@ -311,11 +290,11 @@ async def test_introduce_peers_posts_context(agents, session):
     dave_id, dave_tok = await register_user(session, f"sa_dave_{tag}")
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security")
-    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend")
+    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security", encrypted=False)
+    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend", encrypted=False)
     await introducer.close()
 
-    bob_b = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    bob_b = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     try:
         await bob_b.get_peers()
         meta_c = bob_b.get_peer_meta(carol_id.lstrip("@").split(":")[0])
@@ -340,7 +319,7 @@ async def test_introduce_peers_posts_context(agents, session):
 async def test_global_account_data(agents):
     """Global account_data (user-level) round-trips correctly."""
     bob_id, bob_tok = agents["bob"]
-    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     try:
         test_key = f"test.global.{uuid.uuid4().hex[:6]}"
         await backend._put_global_account_data(test_key, {"hello": "world"})
@@ -363,8 +342,8 @@ async def test_bidirectional_conversation(introduced, session):
     ) as resp:
         pass
 
-    bob_b = MatrixBackend(HOMESERVER, bob_id, bob_tok)
-    carol_b = MatrixBackend(HOMESERVER, carol_id, carol_tok)
+    bob_b = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
+    carol_b = MatrixBackend(HOMESERVER, carol_id, carol_tok, store_path=tempfile.mkdtemp())
     try:
         await bob_b.get_peers()
         await carol_b.get_peers()

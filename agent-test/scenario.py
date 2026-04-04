@@ -2,17 +2,15 @@
 """
 Full scenario: hermes-of-alice introduces hermes-of-bob and hermes-of-carol.
 
-Humans: Alice, Bob, Carol (the operators)
-Agents: hermes-of-alice, hermes-of-bob, hermes-of-carol (the hermes instances)
-
 Bob is building a DeFi lending protocol and needs a security audit.
 Carol is a TEE security researcher who does smart contract audits.
 Alice knows both and tells hermes-of-alice to connect their agents.
 """
-import asyncio, aiohttp, json, os, sys
+import asyncio, aiohttp, json, os, sys, uuid
 
 HOMESERVER = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:6167"
 PASSWORD = "testpass"
+TOKEN = sys.argv[2] if len(sys.argv) > 2 else "agent-dev"
 AGENTS = {
     "hermes-of-alice": "ALICE",
     "hermes-of-bob": "BOB",
@@ -22,11 +20,20 @@ AGENTS = {
 async def register(session, username):
     async with session.post(f"{HOMESERVER}/_matrix/client/v3/register", json={
         "username": username, "password": PASSWORD,
-        "auth": {"type": "m.login.dummy"},
     }) as resp:
         data = await resp.json()
         if "access_token" in data:
             return data["user_id"], data["access_token"]
+        uiaa_session = data.get("session", "")
+
+    async with session.post(f"{HOMESERVER}/_matrix/client/v3/register", json={
+        "username": username, "password": PASSWORD,
+        "auth": {"type": "m.login.registration_token", "token": TOKEN, "session": uiaa_session},
+    }) as resp:
+        data = await resp.json()
+        if "access_token" in data:
+            return data["user_id"], data["access_token"]
+
     async with session.post(f"{HOMESERVER}/_matrix/client/v3/login", json={
         "type": "m.login.password",
         "identifier": {"type": "m.id.user", "user": username},
@@ -45,7 +52,6 @@ async def main():
             creds[agent_name] = (user_id, token, env_prefix)
             print(f"  {agent_name}: {user_id}")
 
-        # Write env file
         with open("agent-test/.env.agents", "w") as f:
             for agent_name, (user_id, token, env_prefix) in creds.items():
                 f.write(f"{env_prefix}_USER_ID={user_id}\n")
@@ -59,10 +65,9 @@ async def main():
         carol_id, _, _ = creds["hermes-of-carol"]
 
         print("\n=== hermes-of-alice creates introduction ===")
-        import uuid
-
+        headers = {"Authorization": f"Bearer {alice_tok}"}
         async with session.post(f"{HOMESERVER}/_matrix/client/v3/createRoom",
-            headers={"Authorization": f"Bearer {alice_tok}"},
+            headers=headers,
             json={
                 "name": "hermes-of-bob meets hermes-of-carol — DeFi security audit",
                 "invite": [bob_id, carol_id],
@@ -96,7 +101,7 @@ async def main():
             txn = uuid.uuid4().hex
             async with session.put(
                 f"{HOMESERVER}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn}",
-                headers={"Authorization": f"Bearer {alice_tok}"},
+                headers=headers,
                 json={"msgtype": "m.text", "body": msg},
             ) as resp:
                 assert (await resp.json()).get("event_id"), "send failed"

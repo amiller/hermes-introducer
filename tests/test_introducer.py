@@ -1,31 +1,8 @@
 import pytest, pytest_asyncio, aiohttp, uuid
 from introducer import MatrixIntroducer
+from conftest import HOMESERVER, register_user
 
 pytestmark = pytest.mark.asyncio
-
-HOMESERVER = "http://localhost:6167"
-PASSWORD = "testpass"
-
-
-# --- Matrix HTTP helpers (raw aiohttp, no matrix-nio for client ops) ---
-
-async def register_user(session, username):
-    async with session.post(f"{HOMESERVER}/_matrix/client/v3/register", json={
-        "username": username,
-        "password": PASSWORD,
-        "auth": {"type": "m.login.dummy"},
-    }) as resp:
-        data = await resp.json()
-        if "access_token" in data:
-            return data["user_id"], data["access_token"]
-    async with session.post(f"{HOMESERVER}/_matrix/client/v3/login", json={
-        "type": "m.login.password",
-        "identifier": {"type": "m.id.user", "user": username},
-        "password": PASSWORD,
-    }) as resp:
-        data = await resp.json()
-        assert "access_token" in data, f"login failed: {data}"
-        return data["user_id"], data["access_token"]
 
 def auth(token):
     return {"Authorization": f"Bearer {token}"}
@@ -125,6 +102,7 @@ async def test_full_introduction_flow(agents, session):
         "Bob is a code reviewer who specializes in Rust",
         "Carol is a security researcher focused on TEE attestation",
         room_name="Introduction: Bob meets Carol",
+        encrypted=False,
     )
     await introducer.close()
 
@@ -174,7 +152,7 @@ async def test_intro_context_visible_before_join(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "context about bob", "context about carol")
+    result = await introducer.introduce(bob_id, carol_id, "context about bob", "context about carol", encrypted=False)
     await introducer.close()
     room_id = result["room_id"]
 
@@ -198,7 +176,7 @@ async def test_agent_rejects_invite(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol")
+    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol", encrypted=False)
     await introducer.close()
     room_id = result["room_id"]
 
@@ -223,7 +201,7 @@ async def test_rejected_agent_cannot_rejoin_invite_only(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol")
+    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol", encrypted=False)
     await introducer.close()
     room_id = result["room_id"]
 
@@ -242,7 +220,7 @@ async def test_reinvite_after_rejection(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol")
+    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol", encrypted=False)
     room_id = result["room_id"]
 
     # Carol rejects
@@ -268,7 +246,7 @@ async def test_agent_leaves_after_joining(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol")
+    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol", encrypted=False)
     await introducer.close()
     room_id = result["room_id"]
 
@@ -298,7 +276,7 @@ async def test_both_agents_reject(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol")
+    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol", encrypted=False)
     await introducer.close()
     room_id = result["room_id"]
 
@@ -323,7 +301,7 @@ async def test_introducer_leaves_room(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol")
+    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol", encrypted=False)
     await introducer.close()
     room_id = result["room_id"]
 
@@ -351,7 +329,7 @@ async def test_all_leave_room_becomes_unreachable(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol")
+    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol", encrypted=False)
     await introducer.close()
     room_id = result["room_id"]
 
@@ -376,7 +354,7 @@ async def test_kick_agent_from_room(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol")
+    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol", encrypted=False)
     await introducer.close()
     room_id = result["room_id"]
 
@@ -406,7 +384,7 @@ async def test_ban_agent_from_room(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol")
+    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol", encrypted=False)
     await introducer.close()
     room_id = result["room_id"]
 
@@ -436,7 +414,7 @@ async def test_message_ordering_preserved(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol")
+    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol", encrypted=False)
     await introducer.close()
     room_id = result["room_id"]
 
@@ -459,7 +437,7 @@ async def test_late_joiner_sees_all_history(agents, session):
     carol_id, carol_tok = agents["carol"]
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol")
+    result = await introducer.introduce(bob_id, carol_id, "about bob", "about carol", encrypted=False)
     await introducer.close()
     room_id = result["room_id"]
 
@@ -489,9 +467,9 @@ async def test_multiple_introductions_create_separate_rooms(agents, session):
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
 
     result1 = await introducer.introduce(bob_id, carol_id, "round 1 bob", "round 1 carol",
-                                          room_name="First Introduction")
+                                          room_name="First Introduction", encrypted=False)
     result2 = await introducer.introduce(bob_id, carol_id, "round 2 bob", "round 2 carol",
-                                          room_name="Second Introduction")
+                                          room_name="Second Introduction", encrypted=False)
     await introducer.close()
 
     assert result1["room_id"] != result2["room_id"]

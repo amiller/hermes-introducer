@@ -1,4 +1,4 @@
-import pytest, pytest_asyncio, aiohttp, uuid
+import pytest, pytest_asyncio, aiohttp, uuid, tempfile
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime, timezone
 from introducer import MatrixIntroducer
@@ -8,29 +8,9 @@ from social_awareness_server import (
     _update_spark_status, PeerSummary, SparkEvaluation,
     SUMMARY_KEY, SPARKS_KEY, STALENESS_THRESHOLD,
 )
+from conftest import HOMESERVER, register_user
 
 pytestmark = pytest.mark.asyncio
-
-HOMESERVER = "http://localhost:6167"
-PASSWORD = "testpass"
-
-
-async def register_user(session, username):
-    async with session.post(f"{HOMESERVER}/_matrix/client/v3/register", json={
-        "username": username, "password": PASSWORD,
-        "auth": {"type": "m.login.dummy"},
-    }) as resp:
-        data = await resp.json()
-        if "access_token" in data:
-            return data["user_id"], data["access_token"]
-    async with session.post(f"{HOMESERVER}/_matrix/client/v3/login", json={
-        "type": "m.login.password",
-        "identifier": {"type": "m.id.user", "user": username},
-        "password": PASSWORD,
-    }) as resp:
-        data = await resp.json()
-        assert "access_token" in data, f"login failed: {data}"
-        return data["user_id"], data["access_token"]
 
 
 def _mock_ctx_sample(return_value):
@@ -117,11 +97,11 @@ async def three_peer_setup(session):
     dave_id, dave_tok = dave
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security audits")
-    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave builds frontend UIs")
+    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security audits", encrypted=False)
+    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave builds frontend UIs", encrypted=False)
     await introducer.close()
 
-    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok)
+    backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     peers = await backend.get_peers()
     return {"backend": backend, "peers": peers, "bob": bob, "carol": carol, "dave": dave}
 

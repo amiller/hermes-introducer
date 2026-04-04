@@ -1,119 +1,125 @@
-import aiohttp, uuid, re
+import json, os, re, uuid
 from datetime import datetime, timezone
+
+import nio
 
 PEER_ACCOUNT_DATA_KEY = "social.awareness.peer"
 
-class MatrixBackend:
-    def __init__(self, homeserver: str, user_id: str, access_token: str):
-        self.homeserver = homeserver
-        self.user_id = user_id
-        self.token = access_token
-        self.next_batch = None
-        self.session = None
-        self._peer_rooms = {}  # room_id → peer metadata
+ENCRYPTION_EVENT = {
+    "type": "m.room.encryption",
+    "state_key": "",
+    "content": {"algorithm": "m.megolm.v1.aes-sha2"},
+}
 
-    async def _ensure_session(self):
-        if not self.session:
-            self.session = aiohttp.ClientSession(
-                headers={"Authorization": f"Bearer {self.token}"}
-            )
+
+class MatrixBackend:
+    def __init__(self, homeserver: str, user_id: str, access_token: str,
+                 store_path: str = None, device_id: str = None):
+        self.user_id = user_id
+        store = store_path or os.path.join(
+            os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
+            "nio_store", user_id.replace(":", "_").lstrip("@"))
+        os.makedirs(store, exist_ok=True)
+        config = nio.AsyncClientConfig(encryption_enabled=True, store_sync_tokens=True)
+        self.client = nio.AsyncClient(homeserver, user_id, store_path=store,
+                                       config=config, device_id=device_id)
+        self.client.access_token = access_token
+        self.client.user_id = user_id
+        self.next_batch = None
+        self._peer_rooms = {}
 
     async def close(self):
-        if self.session:
-            await self.session.close()
-            self.session = None
+        await self.client.close()
+
+    # -- Crypto helpers --
+
+    async def _post_sync_crypto(self):
+        if self.client.should_upload_keys:
+            await self.client.keys_upload()
+        if self.client.should_query_keys:
+            await self.client.keys_query()
+        if self.client.should_claim_keys:
+            await self.client.keys_claim(self.client.get_users_for_key_claiming())
+
+    # -- Core Matrix operations --
 
     async def sync(self, timeout=0):
-        await self._ensure_session()
-        params = {"timeout": str(timeout)}
-        if self.next_batch:
-            params["since"] = self.next_batch
-        async with self.session.get(
-            f"{self.homeserver}/_matrix/client/v3/sync", params=params,
-        ) as resp:
-            data = await resp.json()
-            assert "next_batch" in data, f"sync failed: {data}"
-            self.next_batch = data["next_batch"]
-            return data
+        resp = await self.client.sync(timeout)
+        assert isinstance(resp, nio.SyncResponse), f"sync failed: {resp}"
+        self.next_batch = resp.next_batch
+        await self._post_sync_crypto()
+        return resp
 
     async def _join(self, room_id):
-        await self._ensure_session()
-        async with self.session.post(
-            f"{self.homeserver}/_matrix/client/v3/join/{room_id}", json={},
-        ) as resp:
-            data = await resp.json()
-            assert "room_id" in data, f"join failed: {data}"
-            return data
+        resp = await self.client.join(room_id)
+        assert isinstance(resp, nio.JoinResponse), f"join failed: {resp}"
+        return resp
 
     async def _get_messages(self, room_id, limit=50):
-        await self._ensure_session()
-        async with self.session.get(
-            f"{self.homeserver}/_matrix/client/v3/rooms/{room_id}/messages",
-            params={"dir": "b", "limit": str(limit)},
-        ) as resp:
-            data = await resp.json()
-            return data.get("chunk", [])
+        path = f"/_matrix/client/v3/rooms/{room_id}/messages"
+        params = f"?dir=b&limit={limit}"
+        resp = await self.client.send("GET", path + params, headers=self._auth_headers())
+        data = json.loads(await resp.read())
+        return data.get("chunk", [])
 
     async def _get_members(self, room_id):
-        await self._ensure_session()
-        async with self.session.get(
-            f"{self.homeserver}/_matrix/client/v3/rooms/{room_id}/members",
-        ) as resp:
-            data = await resp.json()
-            return {e["state_key"]: e["content"]["membership"]
-                    for e in data.get("chunk", [])}
+        # Use raw HTTP to get ALL members (joined + invited), not just joined
+        path = f"/_matrix/client/v3/rooms/{room_id}/members"
+        resp = await self.client.send("GET", path, headers=self._auth_headers())
+        data = json.loads(await resp.read())
+        return {e["state_key"]: e["content"]["membership"]
+                for e in data.get("chunk", [])}
 
     async def _get_room_creator(self, room_id):
-        await self._ensure_session()
-        async with self.session.get(
-            f"{self.homeserver}/_matrix/client/v3/rooms/{room_id}/state",
-        ) as resp:
-            events = await resp.json()
-            for e in events:
-                if e.get("type") == "m.room.create":
-                    return e.get("sender") or e.get("content", {}).get("creator")
-            return None
+        resp = await self.client.room_get_state(room_id)
+        assert isinstance(resp, nio.RoomGetStateResponse), f"room_get_state failed: {resp}"
+        for e in resp.events:
+            if e.get("type") == "m.room.create":
+                return e.get("sender") or e.get("content", {}).get("creator")
+        return None
+
+    # -- Account data (no native nio support, use raw HTTP) --
+
+    def _auth_headers(self, extra=None):
+        h = {"Authorization": f"Bearer {self.client.access_token}"}
+        if extra:
+            h.update(extra)
+        return h
 
     async def _put_account_data(self, room_id, key, value):
-        await self._ensure_session()
-        async with self.session.put(
-            f"{self.homeserver}/_matrix/client/v3/user/{self.user_id}/rooms/{room_id}/account_data/{key}",
-            json=value,
-        ) as resp:
-            return await resp.json()
+        path = f"/_matrix/client/v3/user/{self.user_id}/rooms/{room_id}/account_data/{key}"
+        resp = await self.client.send("PUT", path, data=json.dumps(value),
+                                       headers=self._auth_headers({"Content-Type": "application/json"}))
+        return json.loads(await resp.read())
 
     async def _get_account_data(self, room_id, key):
-        await self._ensure_session()
-        async with self.session.get(
-            f"{self.homeserver}/_matrix/client/v3/user/{self.user_id}/rooms/{room_id}/account_data/{key}",
-        ) as resp:
-            if resp.status == 404:
-                return None
-            return await resp.json()
+        path = f"/_matrix/client/v3/user/{self.user_id}/rooms/{room_id}/account_data/{key}"
+        resp = await self.client.send("GET", path, headers=self._auth_headers())
+        if resp.status == 404:
+            return None
+        return json.loads(await resp.read())
 
     async def _put_global_account_data(self, key, value):
-        await self._ensure_session()
-        async with self.session.put(
-            f"{self.homeserver}/_matrix/client/v3/user/{self.user_id}/account_data/{key}",
-            json=value,
-        ) as resp:
-            return await resp.json()
+        path = f"/_matrix/client/v3/user/{self.user_id}/account_data/{key}"
+        resp = await self.client.send("PUT", path, data=json.dumps(value),
+                                       headers=self._auth_headers({"Content-Type": "application/json"}))
+        return json.loads(await resp.read())
 
     async def _get_global_account_data(self, key):
-        await self._ensure_session()
-        async with self.session.get(
-            f"{self.homeserver}/_matrix/client/v3/user/{self.user_id}/account_data/{key}",
-        ) as resp:
-            if resp.status == 404:
-                return None
-            return await resp.json()
+        path = f"/_matrix/client/v3/user/{self.user_id}/account_data/{key}"
+        resp = await self.client.send("GET", path, headers=self._auth_headers())
+        if resp.status == 404:
+            return None
+        return json.loads(await resp.read())
 
-    async def process_invites(self, sync_data):
-        """Auto-join pending invites and extract peer metadata."""
-        invites = sync_data.get("rooms", {}).get("invite", {})
+    # -- Peer discovery --
+
+    async def process_invites(self, sync_resp):
         new_peers = []
-        for room_id in invites:
+        for room_id in sync_resp.rooms.invite:
             await self._join(room_id)
+            # Sync again to get room state after joining
+            await self.sync()
             peer = await self._extract_peer_from_room(room_id)
             if peer:
                 await self._put_account_data(room_id, PEER_ACCOUNT_DATA_KEY, peer)
@@ -122,7 +128,6 @@ class MatrixBackend:
         return new_peers
 
     async def _extract_peer_from_room(self, room_id):
-        """Read room messages and members to figure out who our peer is and what the context says."""
         members = await self._get_members(room_id)
         creator = await self._get_room_creator(room_id)
         messages = await self._get_messages(room_id)
@@ -134,7 +139,6 @@ class MatrixBackend:
 
         peer_id = other_members[0]
 
-        # Extract context: look for "About @peer_id: ..." messages
         context = ""
         about_pattern = re.compile(rf"^About {re.escape(peer_id)}:\s*(.+)", re.DOTALL)
         for event in messages:
@@ -145,9 +149,6 @@ class MatrixBackend:
             if match:
                 context = match.group(1).strip()
                 break
-
-        # Also grab context about US that the peer might want to know
-        # (we extract what was said about the other person, not about us)
 
         return {
             "peer_name": _extract_name(peer_id),
@@ -161,16 +162,15 @@ class MatrixBackend:
         }
 
     async def get_peers(self):
-        """Sync and return all known peers."""
-        sync_data = await self.sync()
-        await self.process_invites(sync_data)
+        sync_resp = await self.sync()
+        await self.process_invites(sync_resp)
 
-        joined = sync_data.get("rooms", {}).get("join", {})
         peers = []
         seen_rooms = set()
         seen_peers = set()
 
-        for room_id in list(joined.keys()) + list(self._peer_rooms.keys()):
+        all_room_ids = list(sync_resp.rooms.join.keys()) + list(self._peer_rooms.keys())
+        for room_id in all_room_ids:
             if room_id in seen_rooms:
                 continue
             seen_rooms.add(room_id)
@@ -191,9 +191,9 @@ class MatrixBackend:
         return peers
 
     async def get_messages_from_peer(self, peer_name, limit=20):
-        """Get recent messages from a specific peer's room."""
         room_id = self._resolve_peer(peer_name)
         assert room_id, f"Unknown peer: {peer_name}"
+        await self.sync()
         events = await self._get_messages(room_id, limit)
         return [
             {
@@ -206,48 +206,36 @@ class MatrixBackend:
         ]
 
     async def send_to_peer(self, peer_name, message):
-        """Send a message to a known peer."""
         room_id = self._resolve_peer(peer_name)
         assert room_id, f"Unknown peer: {peer_name}"
-        await self._ensure_session()
-        txn = uuid.uuid4().hex
-        async with self.session.put(
-            f"{self.homeserver}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn}",
-            json={"msgtype": "m.text", "body": message},
-        ) as resp:
-            data = await resp.json()
-            assert "event_id" in data, f"send failed: {data}"
-            return data
+        resp = await self.client.room_send(
+            room_id, "m.room.message",
+            {"msgtype": "m.text", "body": message},
+            ignore_unverified_devices=True,
+        )
+        assert isinstance(resp, nio.RoomSendResponse), f"send failed: {resp}"
+        return {"event_id": resp.event_id}
 
     async def create_introduction_room(self, peer_a_id, peer_b_id, context_a, context_b, reason=""):
-        await self._ensure_session()
         room_name = f"Introduction: {_extract_name(peer_a_id)} <> {_extract_name(peer_b_id)}"
-        async with self.session.post(
-            f"{self.homeserver}/_matrix/client/v3/createRoom",
-            json={"name": room_name, "invite": [peer_a_id, peer_b_id]},
-        ) as resp:
-            data = await resp.json()
-            assert "room_id" in data, f"createRoom failed: {data}"
-            room_id = data["room_id"]
-        txn = uuid.uuid4().hex
-        async with self.session.put(
-            f"{self.homeserver}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn}",
-            json={"msgtype": "m.text", "body": f"About {peer_a_id}: {context_a}"},
-        ) as resp:
-            assert (await resp.json()).get("event_id"), "send context_a failed"
-        txn = uuid.uuid4().hex
-        async with self.session.put(
-            f"{self.homeserver}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn}",
-            json={"msgtype": "m.text", "body": f"About {peer_b_id}: {context_b}"},
-        ) as resp:
-            assert (await resp.json()).get("event_id"), "send context_b failed"
-        if reason:
-            txn = uuid.uuid4().hex
-            async with self.session.put(
-                f"{self.homeserver}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn}",
-                json={"msgtype": "m.text", "body": f"Why: {reason}"},
-            ) as resp:
-                assert (await resp.json()).get("event_id"), "send reason failed"
+        resp = await self.client.room_create(
+            name=room_name,
+            invite=[peer_a_id, peer_b_id],
+            initial_state=[ENCRYPTION_EVENT],
+        )
+        assert isinstance(resp, nio.RoomCreateResponse), f"createRoom failed: {resp}"
+        room_id = resp.room_id
+
+        for body in [f"About {peer_a_id}: {context_a}",
+                     f"About {peer_b_id}: {context_b}"] + \
+                    ([f"Why: {reason}"] if reason else []):
+            send_resp = await self.client.room_send(
+                room_id, "m.room.message",
+                {"msgtype": "m.text", "body": body},
+                ignore_unverified_devices=True,
+            )
+            assert isinstance(send_resp, nio.RoomSendResponse), f"send failed: {send_resp}"
+
         return {"room_id": room_id, "invited": [peer_a_id, peer_b_id]}
 
     def get_peer_meta(self, peer_name):
@@ -260,7 +248,6 @@ class MatrixBackend:
         return None
 
     def _resolve_peer(self, peer_name):
-        """Find room_id for a peer by name. Accepts 'hermes-of-carol', 'hermes-of-carol@localhost', etc."""
         name = peer_name.split("@")[0] if "@" in peer_name else peer_name
         for room_id, meta in self._peer_rooms.items():
             if meta.get("peer_name") == name or meta.get("peer_name") == peer_name:
@@ -271,13 +258,11 @@ class MatrixBackend:
 
 
 def _extract_name(matrix_id):
-    """@carol_abc123:localhost → carol_abc123"""
     if not matrix_id:
         return "unknown"
     return matrix_id.split(":")[0].lstrip("@")
 
 def _format_peer(meta):
-    """Convert stored metadata to agent-facing peer dict."""
     return {
         "name": meta.get("peer_name", "unknown"),
         "id": meta.get("peer_id", "").lstrip("@").replace(":", "@", 1) if meta.get("peer_id") else "unknown",
