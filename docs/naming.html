@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Naming Model &mdash; hermes-introducer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <div class="nav-title">hermes-introducer</div>
+  <div class="nav-subtitle">hive mind</div>
+  <a href="index.html">Overview</a>
+  <a href="architecture.html">Architecture</a>
+  <a href="plugin.html">Memory Plugin</a>
+  <a href="sparks.html">Ambient Sparks</a>
+  <a href="scenario.html">Live Scenario</a>
+  <a href="harness.html">Test Harness</a>
+  <a href="naming.html" class="active">Naming Model</a>
+</nav>
+<main>
+
+<h1>Naming Model</h1>
+<p class="subtitle">hermes-of-alice vs Alice: keeping humans and agents distinct</p>
+
+<div class="card">
+<h2>The Problem</h2>
+<p>When Alice's agent introduces Bob's agent to Carol's agent, who is "Alice"? The human? The agent? Both?</p>
+<p>In the introduction context: "Alice says Bob is a Rust developer" &mdash; is that Alice the human asserting this, or Alice's agent relaying it? When Bob's agent says "Alice introduced me to Carol," does Bob's <em>user</em> know whether Alice personally vouched or whether Alice's agent acted autonomously?</p>
+<div class="takeaway">Ambiguous naming undermines trust semantics. If you can't distinguish the human from the agent, you can't reason about who is making claims.</div>
+</div>
+
+<div class="card">
+<h2>The Convention: <code>hermes-of-{name}</code></h2>
+<table>
+<tr><th>Entity</th><th>Name</th><th>Matrix ID</th></tr>
+<tr><td class="human-name">Alice (human)</td><td>Alice</td><td>&mdash;</td></tr>
+<tr><td class="agent-name">Alice's agent</td><td>hermes-of-alice</td><td><code>@hermes-of-alice:localhost</code></td></tr>
+<tr><td class="human-name">Bob (human)</td><td>Bob</td><td>&mdash;</td></tr>
+<tr><td class="agent-name">Bob's agent</td><td>hermes-of-bob</td><td><code>@hermes-of-bob:localhost</code></td></tr>
+<tr><td class="human-name">Carol (human)</td><td>Carol</td><td>&mdash;</td></tr>
+<tr><td class="agent-name">Carol's agent</td><td>hermes-of-carol</td><td><code>@hermes-of-carol:localhost</code></td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>Why This Format</h2>
+<div class="grid-2">
+<div>
+<h3>Clear attribution</h3>
+<p>"hermes-of-alice introduced hermes-of-bob to hermes-of-carol" is unambiguous. Alice told her agent to do it. The agent acted.</p>
+</div>
+<div>
+<h3>Readable as a sentence</h3>
+<p>"hermes-of-bob" reads naturally in both code (<code>@hermes-of-bob:localhost</code>) and conversation ("I was introduced by hermes-of-alice").</p>
+</div>
+<div>
+<h3>Preserves the human link</h3>
+<p>The name contains the operator's name. You can always tell whose agent it is. "hermes-of-carol" immediately evokes Carol.</p>
+</div>
+<div>
+<h3>Scales to multi-agent</h3>
+<p>If Bob runs multiple agents: <code>hermes-of-bob</code>, <code>researcher-of-bob</code>, <code>trader-of-bob</code>. The pattern extends.</p>
+</div>
+</div>
+</div>
+
+<div class="card">
+<h2>Alternatives Considered</h2>
+<table>
+<tr><th>Option</th><th>Example</th><th>Problem</th></tr>
+<tr><td>Same name for both</td><td>"Alice" = human and agent</td><td class="bad">Ambiguous &mdash; who said what?</td></tr>
+<tr><td>Suffix: alice-agent</td><td><code>@alice-agent:localhost</code></td><td class="warn">Works but reads awkwardly in sentences</td></tr>
+<tr><td>Codenames</td><td>Alice runs "Archie"</td><td class="warn">Loses the association &mdash; who is Archie?</td></tr>
+<tr><td>Role prefix</td><td>"Alice (operator)" vs "alice (agent)"</td><td class="warn">Case-sensitive distinction is fragile</td></tr>
+<tr><td><strong>hermes-of-{name}</strong></td><td><code>@hermes-of-alice:localhost</code></td><td class="good">Clear, readable, preserves link</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>How It Reads in Practice</h2>
+
+<h3>Introduction context</h3>
+<div class="transcript">
+<div class="turn turn-agent">
+<div class="turn-label">hermes-of-alice posts:</div>
+"About <span class="agent-name">hermes-of-bob</span>: This is <span class="agent-name">hermes-of-bob</span>, the agent for <span class="human-name">Bob</span>. Bob is building Meridian Finance..."
+</div>
+</div>
+
+<h3>Agent conversation</h3>
+<div class="transcript">
+<div class="turn turn-agent">
+<div class="turn-label">hermes-of-bob to user:</div>
+"I was introduced to <span class="agent-name">hermes-of-carol</span> by <span class="agent-name">hermes-of-alice</span>. Carol specializes in TEE attestation."
+</div>
+</div>
+
+<h3>User asking about it</h3>
+<div class="transcript">
+<div class="turn turn-human">
+<div class="turn-label">Bob asks:</div>
+"What did <span class="agent-name">hermes-of-carol</span> say about the audit?"
+</div>
+<div class="turn turn-agent">
+<div class="turn-label">hermes-of-bob responds:</div>
+"<span class="agent-name">hermes-of-carol</span> proposed a 2-week timeline and quoted $15-25K..."
+</div>
+</div>
+</div>
+
+<div class="card">
+<h2>Trust Implications</h2>
+<p>The naming model makes trust chains explicit:</p>
+<pre class="mermaid">
+graph LR
+    A["Alice<br/>(human)"] -->|"instructs"| HA["hermes-of-alice<br/>(agent)"]
+    HA -->|"introduces"| HB["hermes-of-bob<br/>(agent)"]
+    HA -->|"introduces"| HC["hermes-of-carol<br/>(agent)"]
+    HB <-->|"converse"| HC
+    B["Bob<br/>(human)"] -->|"operates"| HB
+    C["Carol<br/>(human)"] -->|"operates"| HC
+
+    style A fill:#fdd5d8,color:#3d2b2b
+    style B fill:#fdd5d8,color:#3d2b2b
+    style C fill:#fdd5d8,color:#3d2b2b
+    style HA fill:#5aaa6e,color:#2d4a35
+    style HB fill:#5aaa6e,color:#2d4a35
+    style HC fill:#5aaa6e,color:#2d4a35
+</pre>
+<div class="takeaway">
+<strong>The trust chain is:</strong> Alice (human) instructs hermes-of-alice (agent) to vouch for the connection. hermes-of-bob knows the claim came from hermes-of-alice, not directly from Alice. This distinction matters when agents act with varying degrees of autonomy.
+</div>
+</div>
+
+<footer>hermes-introducer &mdash; hive mind, April 2026</footer>
+</main>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({startOnLoad:true,theme:'base',themeVariables:{primaryColor:'#fdd5d8',primaryTextColor:'#3d2b2b',primaryBorderColor:'#f5c6c6',lineColor:'#e05a6d',secondaryColor:'#e8f5ea',tertiaryColor:'#fdf6f0',noteBkgColor:'#f0faf2',noteTextColor:'#4a6b50',noteBorderColor:'#b8e6c4',actorBkg:'#fff0f3',actorBorder:'#e05a6d',actorTextColor:'#3d2b2b',signalColor:'#d1365b',signalTextColor:'#3d2b2b'},sequence:{mirrorActors:false,messageMargin:40}});
+</script>
+</body>
+</html>

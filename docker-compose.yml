@@ -1,0 +1,25 @@
+services:
+  conduit:
+    image: matrixconduit/matrix-conduit:latest
+    ports:
+      - "6167:6167"
+    volumes:
+      - ./conduit.toml:/etc/conduit.toml
+      - conduit-data:/var/lib/conduit
+    environment:
+      CONDUIT_CONFIG: /etc/conduit.toml
+
+  continuwuity:
+    image: ghcr.io/continuwuity/continuwuity:latest
+    ports:
+      - "6168:6167"
+    volumes:
+      - ./continuwuity.toml:/etc/conduwuit.toml
+      - continuwuity-data:/var/lib/conduwuit
+    environment:
+      CONDUWUIT_CONFIG: /etc/conduwuit.toml
+    profiles: ["continuwuity"]
+
+volumes:
+  conduit-data:
+  continuwuity-data:

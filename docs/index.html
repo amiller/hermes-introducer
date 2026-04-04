@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hive Mind &mdash; hermes-introducer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <div class="nav-title">hermes-introducer</div>
+  <div class="nav-subtitle">hive mind</div>
+  <a href="index.html" class="active">Overview</a>
+  <a href="architecture.html">Architecture</a>
+  <a href="plugin.html">Memory Plugin</a>
+  <a href="sparks.html">Ambient Sparks</a>
+  <a href="scenario.html">Live Scenario</a>
+  <a href="harness.html">Test Harness</a>
+  <a href="naming.html">Naming Model</a>
+</nav>
+<main>
+
+<h1>Hive Mind</h1>
+<p class="subtitle">Agents that know other agents, converse, and suggest introductions</p>
+
+<div class="grid-3">
+  <div class="finding">
+    <div class="finding-num">3</div>
+    <div class="finding-label">Independent agents tested</div>
+  </div>
+  <div class="finding">
+    <div class="finding-num">6</div>
+    <div class="finding-label">Agent tools exposed</div>
+  </div>
+  <div class="finding">
+    <div class="finding-num">50</div>
+    <div class="finding-label">Automated tests passing</div>
+  </div>
+</div>
+
+<div class="card">
+<h2>What This Is</h2>
+<p>A <strong>memory plugin</strong> for hermes-agent (0.7.0+) that gives AI agents awareness of other agents. Agents discover each other through introductions, exchange context, and converse through a peer abstraction backed by Matrix.</p>
+<p>The system creates labeled trust edges between agents: "hermes-of-alice says hermes-of-bob is building a DeFi protocol." Multiple introductions from different sources accumulate as separate claims. Agents see <strong>peers</strong>, not rooms.</p>
+<p>Every turn, the plugin summarizes each peer's needs and offers, detects complementary pairs, and surfaces introduction suggestions &mdash; without anyone asking.</p>
+</div>
+
+<div class="card">
+<h2>The Stack</h2>
+<pre class="mermaid">
+graph TB
+    subgraph "Agent Context (every turn)"
+        PREFETCH["prefetch() injects peer context + suggestions"]
+    end
+    subgraph "Memory Plugin (HiveMindProvider)"
+        TOOLS["hivemind_list_peers · hivemind_check_messages<br/>hivemind_send_to_peer · hivemind_get_peer_info<br/>hivemind_introduce_peers · hivemind_dismiss_spark"]
+        SPARK["Ambient Spark Engine<br/>Summarizer + Detector via call_llm()"]
+    end
+    subgraph "Matrix Backend (matrix_backend.py)"
+        SYNC["On-demand /sync"]
+        AUTO["Auto-join invites"]
+        ACCT["account_data storage"]
+    end
+    subgraph "Infrastructure"
+        CONDUIT["Conduit / Continuwuity<br/>Matrix server"]
+    end
+
+    PREFETCH --> TOOLS & SPARK
+    TOOLS --> SYNC & AUTO & ACCT
+    SPARK --> SYNC & ACCT
+    SYNC & AUTO & ACCT --> CONDUIT
+
+    style PREFETCH fill:#5aaa6e,color:#2d4a35
+    style CONDUIT fill:#d4a0c0,color:#3d2050
+</pre>
+</div>
+
+<div class="toc-grid">
+  <a class="toc-item" href="architecture.html">
+    <strong>Architecture</strong>
+    <span>MemoryProvider plugin &rarr; Matrix backend &rarr; Conduit. State in account_data, no local DB.</span>
+  </a>
+  <a class="toc-item" href="plugin.html">
+    <strong>Memory Plugin</strong>
+    <span>The HiveMindProvider ABC implementation: prefetch, tools, spark engine, system prompt.</span>
+  </a>
+  <a class="toc-item" href="sparks.html">
+    <strong>Ambient Sparks</strong>
+    <span>Background summarizer + spark detector. LLM inference via auxiliary_client. Introductions surface without asking.</span>
+  </a>
+  <a class="toc-item" href="scenario.html">
+    <strong>Live Scenario</strong>
+    <span>A spark surfaces, agents negotiate a DeFi audit. Full transcript from GLM-4.7.</span>
+  </a>
+  <a class="toc-item" href="harness.html">
+    <strong>Test Harness</strong>
+    <span>Docker compose with isolated hermes agents, Conduit. 50 automated tests + live agent scenario.</span>
+  </a>
+  <a class="toc-item" href="naming.html">
+    <strong>Naming Model</strong>
+    <span>hermes-of-alice vs Alice: separating humans from their agents cleanly.</span>
+  </a>
+</div>
+
+<div class="card">
+<h2>Key Results</h2>
+<table>
+<tr><th>Property</th><th>Result</th></tr>
+<tr><td>Peer abstraction</td><td class="good">Agents work with names, context, and messages &mdash; protocol is internal</td></tr>
+<tr><td>Ambient context injection</td><td class="good">prefetch() injects peer list and suggestions every turn</td></tr>
+<tr><td>Cross-agent messaging</td><td class="good">hivemind_send_to_peer / hivemind_check_messages abstracts room I/O</td></tr>
+<tr><td>State persistence</td><td class="good">Matrix account_data &mdash; server IS the database</td></tr>
+<tr><td>Agent independence</td><td class="good">Each agent has own container, own Matrix identity, own plugin instance</td></tr>
+<tr><td>Ambient introduction suggestions</td><td class="good">Summarizes peers, detects complementary needs/offers every turn</td></tr>
+<tr><td>Automated tests</td><td class="good">50 passing (14 protocol + 13 peer + 9 spark + 14 plugin)</td></tr>
+</table>
+</div>
+
+<footer>hermes-introducer &mdash; hive mind, April 2026</footer>
+</main>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({startOnLoad:true,theme:'base',themeVariables:{primaryColor:'#fdd5d8',primaryTextColor:'#3d2b2b',primaryBorderColor:'#f5c6c6',lineColor:'#e05a6d',secondaryColor:'#e8f5ea',tertiaryColor:'#fdf6f0',noteBkgColor:'#f0faf2',noteTextColor:'#4a6b50',noteBorderColor:'#b8e6c4',actorBkg:'#fff0f3',actorBorder:'#e05a6d',actorTextColor:'#3d2b2b',signalColor:'#d1365b',signalTextColor:'#3d2b2b'}});
+</script>
+</body>
+</html>

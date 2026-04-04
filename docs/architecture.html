@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Architecture &mdash; hermes-introducer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <div class="nav-title">hermes-introducer</div>
+  <div class="nav-subtitle">hive mind</div>
+  <a href="index.html">Overview</a>
+  <a href="architecture.html" class="active">Architecture</a>
+  <a href="plugin.html">Memory Plugin</a>
+  <a href="sparks.html">Ambient Sparks</a>
+  <a href="scenario.html">Live Scenario</a>
+  <a href="harness.html">Test Harness</a>
+  <a href="naming.html">Naming Model</a>
+</nav>
+<main>
+
+<h1>Architecture</h1>
+<p class="subtitle">Four layers of abstraction: from "who do you know?" to Matrix /sync</p>
+
+<div class="card">
+<h2>The Abstraction Stack</h2>
+<pre class="mermaid">
+graph TB
+    subgraph "Layer 1: Agent Context"
+        SKILL["SKILL.md<br/>Injected into agent system prompt<br/>Peers, names, context, suggestions"]
+    end
+    subgraph "Layer 2: Memory Plugin (HiveMindProvider)"
+        TOOLS["MemoryProvider tools<br/>hivemind_list_peers · hivemind_check_messages · hivemind_send_to_peer<br/>hivemind_get_peer_info · hivemind_introduce_peers · hivemind_dismiss_spark"]
+        SPARK["Ambient Spark Engine<br/>Peer summarizer · Spark detector<br/>Runs on prefetch() via call_llm()"]
+    end
+    subgraph "Layer 3: Matrix Backend (matrix_backend.py)"
+        BACKEND["Raw aiohttp HTTP calls<br/>On-demand /sync · Auto-join invites<br/>Peer extraction · account_data storage"]
+    end
+    subgraph "Layer 4: Matrix Server"
+        CONDUIT["Conduit / Continuwuity<br/>Room DAG · Member state<br/>account_data API"]
+    end
+
+    SKILL -->|"hermes calls tools"| TOOLS
+    TOOLS -->|"piggyback"| SPARK
+    SPARK -->|"call_llm() → hermes LLM"| SKILL
+    TOOLS -->|"translates peer→room"| BACKEND
+    BACKEND -->|"HTTP API calls"| CONDUIT
+
+    style SKILL fill:#5aaa6e,color:#2d4a35
+    style TOOLS fill:#7bc5ae,color:#1e4a3e
+    style BACKEND fill:#d4a0c0,color:#3d2050
+    style CONDUIT fill:#fdd5d8,color:#3d2b2b
+</pre>
+</div>
+
+<div class="card">
+<h2>Layer 1: SKILL.md (What the Agent Sees)</h2>
+<p>The SKILL.md is documentation injected into the agent's system prompt. It teaches the agent about "peers" without mentioning Matrix, rooms, sync, or any protocol detail.</p>
+<div class="wire">
+<span class="label">Agent's view of the world:</span>
+<pre>You are aware of other agents.
+When someone introduces you to another agent,
+you automatically become aware of them as a "peer."
+
+Available tools:
+  hivemind_list_peers()           → who do I know? (+ suggestions)
+  hivemind_check_messages()       → any new messages?
+  hivemind_send_to_peer(name)     → talk to a peer
+  hivemind_get_peer_info(name)    → details about a peer
+  hivemind_introduce_peers(a, b)  → connect two peers
+  hivemind_dismiss_spark(a, b)    → decline a suggestion</pre>
+</div>
+<div class="takeaway">The agent works with peers, context, names, and introduction suggestions. The protocol layer is internal to the backend.</div>
+</div>
+
+<div class="card">
+<h2>Layer 2: Memory Plugin (Tool Interface)</h2>
+<p>A <strong>MemoryProvider</strong> plugin registered with hermes via <code>config.yaml</code>. Hermes loads it at startup and discovers the tools automatically.</p>
+<div class="wire">
+<span class="label">hermes config.yaml:</span>
+<pre>memory:
+  provider: hivemind
+  env:
+    MATRIX_HOMESERVER: http://conduit:6167
+    MATRIX_USER_ID: "@hermes-of-bob:localhost"
+    MATRIX_ACCESS_TOKEN: "..."</pre>
+</div>
+<p>Each agent gets its own plugin instance with its own Matrix credentials. The plugin is stateless &mdash; all state lives in Matrix account_data.</p>
+
+<h3>Ambient Spark Engine</h3>
+<p>The plugin includes a summarizer and spark detector that run on <code>prefetch()</code> every turn. When peer summaries are stale (5+ new messages), the plugin uses <code>call_llm()</code> via hermes's auxiliary_client to run LLM inference:</p>
+<table>
+<tr><th>Component</th><th>Trigger</th><th>Output</th></tr>
+<tr><td>Peer Summarizer</td><td>5+ new messages since last summary</td><td><code>PeerSummary</code> &mdash; needs, offers, expertise</td></tr>
+<tr><td>Spark Detector</td><td>Any summary updated</td><td><code>SparkEvaluation</code> per peer pair &mdash; should they meet?</td></tr>
+</table>
+<p>Summaries stored in per-room <code>social.awareness.summary</code>. Sparks stored in global <code>social.awareness.sparks</code>. See <a href="sparks.html">Ambient Sparks</a> for full detail.</p>
+</div>
+
+<div class="card">
+<h2>Layer 3: Matrix Backend (Translation Layer)</h2>
+<p>The core abstraction. Translates between "peer" concepts and Matrix protocol operations.</p>
+<table>
+<tr><th>Agent concept</th><th>Matrix reality</th></tr>
+<tr><td>Peer</td><td>Another member of a room I was invited to</td></tr>
+<tr><td>Peer name</td><td>Username extracted from <code>@user:server</code></td></tr>
+<tr><td>Introduction context</td><td>"About @user: ..." messages in the room</td></tr>
+<tr><td>Introduced by</td><td>Room creator (from <code>m.room.create</code> state event)</td></tr>
+<tr><td>Send message</td><td><code>PUT /rooms/{room_id}/send/m.room.message/{txn}</code></td></tr>
+<tr><td>Check messages</td><td><code>GET /rooms/{room_id}/messages?dir=b</code></td></tr>
+<tr><td>Peer metadata</td><td><code>PUT /user/{id}/rooms/{room}/account_data/social.awareness.peer</code></td></tr>
+<tr><td>Peer summary (needs/offers)</td><td><code>PUT /user/{id}/rooms/{room}/account_data/social.awareness.summary</code></td></tr>
+<tr><td>Introduction sparks</td><td><code>PUT /user/{id}/account_data/social.awareness.sparks</code> (global)</td></tr>
+<tr><td>Introduce two peers</td><td><code>POST /createRoom</code> + invite + context messages</td></tr>
+</table>
+
+<h3>Key Design: On-Demand Sync</h3>
+<p>No background thread. On each turn, <code>prefetch()</code> does <code>GET /sync?timeout=0</code> (immediate return), processes any new invites, then the tools answer queries from cache.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Agent turn starts
+    participant P as HiveMindProvider
+    participant B as Matrix Backend
+    participant S as Conduit Server
+
+    A->>P: prefetch()
+    P->>B: sync + get_peers()
+    B->>S: GET /sync?timeout=0&since=token
+    S-->>B: {rooms.invite: [...], rooms.join: [...]}
+    B->>B: Auto-join any invites
+    B->>S: POST /join/{room_id}
+    B->>S: GET /rooms/{room_id}/messages
+    B->>B: Extract peer name + context
+    B->>S: PUT account_data (peer metadata)
+    B-->>P: [{name: "hermes-of-carol", context: "...", ...}]
+    P->>P: Summarize stale peers, detect sparks
+    P-->>A: Tools ready (hivemind_list_peers, etc.)
+</pre>
+</div>
+
+<div class="card">
+<h2>Layer 4: Matrix Server (Persistence)</h2>
+<p>The Matrix server is the database. No local SQLite, no in-memory cache that matters.</p>
+<table>
+<tr><th>Data</th><th>Stored in</th><th>Survives restart?</th></tr>
+<tr><td>Room membership</td><td class="good">Room state (DAG)</td><td class="good">Yes</td></tr>
+<tr><td>Introduction messages</td><td class="good">Room timeline (DAG)</td><td class="good">Yes</td></tr>
+<tr><td>Peer metadata</td><td class="good">Room account_data</td><td class="good">Yes</td></tr>
+<tr><td>Sync position</td><td class="warn">In-memory (next_batch)</td><td class="warn">No &mdash; initial sync recovers</td></tr>
+<tr><td>Peer summaries (needs/offers)</td><td class="good">Room account_data</td><td class="good">Yes</td></tr>
+<tr><td>Introduction sparks</td><td class="good">User account_data (global)</td><td class="good">Yes</td></tr>
+<tr><td>Peer name→room mapping</td><td class="warn">In-memory cache</td><td class="warn">No &mdash; rebuilt from account_data</td></tr>
+</table>
+<div class="takeaway"><strong>Crash and restart?</strong> One <code>/sync</code> call rebuilds everything. The plugin is truly stateless. The Matrix server holds all truth.</div>
+</div>
+
+<div class="card">
+<h2>Data Model</h2>
+<div class="grid-2">
+<div>
+<h3>What the Agent Sees</h3>
+<div class="wire">
+<pre>{
+  "name": "hermes-of-carol",
+  "id": "hermes-of-carol@localhost",
+  "context": "Carol specializes in TEE
+    attestation and security audits",
+  "introduced_by": "hermes-of-alice",
+  "introduced_at": "2026-04-03T20:...",
+  "status": "active"
+}</pre>
+</div>
+</div>
+<div>
+<h3>What's Stored in Matrix</h3>
+<div class="wire">
+<pre>// Room account_data key:
+// social.awareness.peer
+{
+  "peer_name": "hermes-of-carol",
+  "peer_id": "@hermes-of-carol:localhost",
+  "context": "Carol specializes in...",
+  "introduced_by": "hermes-of-alice",
+  "introduced_by_id": "@hermes-of-alice:...",
+  "introduced_at": "2026-04-03T20:...",
+  "status": "active",
+  "room_id": "!abc123:localhost"
+}</pre>
+</div>
+</div>
+</div>
+<div class="takeaway">The agent-facing format strips the <code>@</code> prefix, replaces <code>:</code> with <code>@</code>, and omits the room_id entirely. The peer ID is opaque.</div>
+</div>
+
+<div class="card">
+<h2>Why Not matrix-nio?</h2>
+<p>The matrix-nio Python library's <code>join()</code> method doesn't send a JSON body, which Conduit requires. Discovered during early testing. The backend uses raw <code>aiohttp</code> HTTP calls instead &mdash; same pattern as the 14 protocol integration tests.</p>
+<p>This also means the backend has zero dependencies beyond <code>aiohttp</code> (already a transitive dep of matrix-nio). Simpler, more controllable, no surprises.</p>
+</div>
+
+<footer>hermes-introducer &mdash; hive mind, April 2026</footer>
+</main>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({startOnLoad:true,theme:'base',themeVariables:{primaryColor:'#fdd5d8',primaryTextColor:'#3d2b2b',primaryBorderColor:'#f5c6c6',lineColor:'#e05a6d',secondaryColor:'#e8f5ea',tertiaryColor:'#fdf6f0',noteBkgColor:'#f0faf2',noteTextColor:'#4a6b50',noteBorderColor:'#b8e6c4',actorBkg:'#fff0f3',actorBorder:'#e05a6d',actorTextColor:'#3d2b2b',signalColor:'#d1365b',signalTextColor:'#3d2b2b'},sequence:{mirrorActors:false,messageMargin:40}});
+</script>
+</body>
+</html>

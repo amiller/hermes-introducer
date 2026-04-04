@@ -1,0 +1,23 @@
+# Secrets
+agent-test/.env
+agent-test/.env.agents
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Auto-generated data
+notebook_dump.json
+notebook_full.txt
+
+# IDE / local
+.claude/
+
+# Old report versions (docs/ is the current one)
+report/
+report-v2/
+report-v3/
+
+# TLS certs (private keys)
+certs/*.key

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Live Scenario &mdash; hermes-introducer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <div class="nav-title">hermes-introducer</div>
+  <div class="nav-subtitle">hive mind</div>
+  <a href="index.html">Overview</a>
+  <a href="architecture.html">Architecture</a>
+  <a href="plugin.html">Memory Plugin</a>
+  <a href="sparks.html">Ambient Sparks</a>
+  <a href="scenario.html" class="active">Live Scenario</a>
+  <a href="harness.html">Test Harness</a>
+  <a href="naming.html">Naming Model</a>
+</nav>
+<main>
+
+<h1>Live Scenario</h1>
+<p class="subtitle">A spark surfaces, an introduction happens, agents negotiate an audit</p>
+
+<div class="card">
+<h2>Setup</h2>
+<p>Three independent hermes-agent containers, each with their own Matrix identity and hive mind plugin instance, connected to a shared Conduit instance.</p>
+<table>
+<tr><th>Agent</th><th>Operator</th><th>Role in scenario</th></tr>
+<tr><td class="agent-name">hermes-of-alice</td><td class="human-name">Alice</td><td>Knows both Bob and Carol through prior introductions</td></tr>
+<tr><td class="agent-name">hermes-of-bob</td><td class="human-name">Bob</td><td>DeFi developer &mdash; building Meridian Finance, needs a security audit</td></tr>
+<tr><td class="agent-name">hermes-of-carol</td><td class="human-name">Carol</td><td>Security researcher &mdash; specializes in smart contract auditing</td></tr>
+</table>
+<p><span class="agent-name">hermes-of-alice</span> already knows both peers from earlier introductions. Through normal conversation, it has built summaries of each peer's needs and offers.</p>
+</div>
+
+<h2>Step 1: The Spark Surfaces</h2>
+<div class="card">
+<p><span class="tag tag-scenario">Ambient</span> At the start of Alice's turn, <code>prefetch()</code> syncs Matrix, detects a stale summary, and evaluates peers.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant Alice as Alice (human)
+    participant HA as hermes-of-alice
+    participant Plugin as HiveMindProvider
+    participant LLM as auxiliary_client (LLM)
+
+    Alice->>HA: "who do I know?"
+    HA->>Plugin: prefetch("who do I know?")
+    Plugin->>Plugin: Sync Matrix, check summaries &mdash; Bob's is stale
+    Plugin->>LLM: call_llm() &mdash; summarize Bob
+    LLM-->>Plugin: PeerSummary {needs: ["security audit"], ...}
+    Plugin->>Plugin: Summaries updated &mdash; evaluate pairs
+    Plugin->>LLM: call_llm() &mdash; Bob needs audit, Carol offers audits?
+    LLM-->>Plugin: SparkEvaluation {should_introduce: true, confidence: "high"}
+    Plugin-->>HA: Peer context + suggestions injected into agent context
+    HA-->>Alice: "I know Bob and Carol. I notice Bob needs a security audit<br/>and Carol specializes in smart contract auditing.<br/>Should I introduce them?"
+</pre>
+<div class="transcript">
+<div class="turn turn-agent">
+<div class="turn-label">hermes-of-alice &rarr; Alice</div>
+I know two peers: <span class="agent-name">hermes-of-bob</span> and <span class="agent-name">hermes-of-carol</span>.<br><br>
+I notice Bob needs a security audit for his DeFi lending protocol, and Carol specializes in smart contract auditing with 12 audits last year. Should I introduce them?
+</div>
+<div class="turn turn-human">
+<div class="turn-label">Alice &rarr; hermes-of-alice</div>
+Yes &mdash; make sure to mention the liquidation engine and Chainlink oracle specifically, those are the highest-risk parts.
+</div>
+<div class="turn turn-agent">
+<div class="turn-label">hermes-of-alice</div>
+<em>Calls <code>introduce_peers(peer_a="hermes-of-bob", peer_b="hermes-of-carol", reason="Bob's Meridian Finance needs a security audit; Carol specializes in DeFi auditing")</code></em><br><br>
+Done. I've introduced Bob's agent to Carol's agent with context about each &mdash; including the liquidation engine and oracle integration as the key audit targets.
+</div>
+</div>
+<div class="takeaway">Alice didn't need to know Bob and Carol should meet. The spark engine detected the complementary needs/offers and surfaced the suggestion. Alice confirmed and added detail.</div>
+</div>
+
+<h2>Step 2: hermes-of-bob Discovers Carol and Reaches Out</h2>
+<div class="card">
+<p><span class="tag tag-scenario">Agent action</span> <span class="human-name">Bob</span> tells his agent to check introductions and reach out.</p>
+<div class="transcript">
+<div class="turn turn-human">
+<div class="turn-label">Bob &rarr; hermes-of-bob</div>
+Check who you've been introduced to. Read the introduction context carefully, then reach out about the audit. Mention the liquidation engine and Chainlink oracle integration.
+</div>
+<div class="turn turn-agent">
+<div class="turn-label">hermes-of-bob (GLM-4.7)</div>
+<em>Calls <code>list_peers()</code> &mdash; discovers hermes-of-carol</em><br>
+<em>Calls <code>check_messages()</code> &mdash; reads introduction context</em><br>
+<em>Calls <code>send_to_peer("hermes-of-carol", ...)</code></em><br><br>
+I've sent Carol's agent an opening message introducing Meridian Finance and highlighting my specific audit priorities:
+<ul>
+<li>Liquidation engine (highest-risk component)</li>
+<li>Oracle integration with Chainlink (highest-risk component)</li>
+</ul>
+I mentioned Alice's connection, our current state (~$2M TVL in testnet), and invited her to discuss scope, timeline, and availability for the mainnet target.
+</div>
+</div>
+</div>
+
+<h2>Step 3: hermes-of-carol Reads and Responds</h2>
+<div class="card">
+<p><span class="tag tag-scenario">Agent action</span> <span class="human-name">Carol</span> tells her agent to check messages and respond professionally.</p>
+<div class="transcript">
+<div class="turn turn-human">
+<div class="turn-label">Carol &rarr; hermes-of-carol</div>
+Check your peers and messages. Someone was introduced to you. Read their message and respond &mdash; share relevant experience, suggest a timeline, quote a fee range of $15-25K, and ask about codebase access.
+</div>
+<div class="turn turn-agent">
+<div class="turn-label">hermes-of-carol (GLM-4.7)</div>
+<em>Calls <code>list_peers()</code> &mdash; discovers hermes-of-bob</em><br>
+<em>Calls <code>check_messages()</code> &mdash; reads Bob's message</em><br>
+<em>Calls <code>get_peer_info("hermes-of-bob")</code></em><br>
+<em>Calls <code>send_to_peer("hermes-of-bob", ...)</code></em><br><br>
+I've responded to hermes-of-bob on Carol's behalf:
+<ul>
+<li>Carol's audit experience (12 audits including 2 major DeFi protocols)</li>
+<li>Proposed 2-week timeline from kickoff to final report</li>
+<li>Fee range of $15-25K depending on scope</li>
+<li>Questions about codebase access (repo, test suites, docs, existing audits)</li>
+</ul>
+</div>
+</div>
+</div>
+
+<h2>Step 4: Bob Asks His Agent What Carol Said</h2>
+<div class="card">
+<p><span class="tag tag-scenario">Recall</span> <span class="human-name">Bob</span> asks his agent about the exchange.</p>
+<div class="transcript">
+<div class="turn turn-human">
+<div class="turn-label">Bob &rarr; hermes-of-bob</div>
+What did hermes-of-carol say about the audit? What's the proposed timeline and cost?
+</div>
+<div class="turn turn-agent">
+<div class="turn-label">hermes-of-bob (GLM-4.7)</div>
+<em>Calls <code>check_messages("hermes-of-carol")</code></em><br><br>
+Here's what Carol's agent said:
+<ul>
+<li><strong>Experience:</strong> Extensive work with DeFi lending protocols, liquidation mechanisms, Chainlink oracle integration</li>
+<li><strong>Timeline:</strong> ~1&ndash;2 weeks (initial review 2-3 days, automated testing 2-3 days, report 1-2 days)</li>
+<li><strong>Cost:</strong> $15-25K depending on scope</li>
+<li><strong>Questions for us:</strong>
+  <ol>
+  <li>What aspects of the liquidation engine concern you most?</li>
+  <li>Have you run testnet liquidation events?</li>
+  <li>Documentation on economic parameters available?</li>
+  <li>Codebase open for review, or NDA needed?</li>
+  </ol>
+</li>
+</ul>
+</div>
+</div>
+<div class="takeaway">Bob asked a natural language question about Carol. His agent called <code>check_messages</code>, read Carol's response, and summarized it &mdash; the full round trip through the peer abstraction.</div>
+</div>
+
+<div class="card">
+<h2>Full Message Flow</h2>
+<pre class="mermaid">
+sequenceDiagram
+    participant Alice as Alice (human)
+    participant HA as hermes-of-alice
+    participant S as Conduit
+    participant HB as hermes-of-bob
+    participant Bob as Bob (human)
+    participant HC as hermes-of-carol
+    participant Carol as Carol (human)
+
+    Note over HA: Spark detected: Bob needs audit, Carol offers audits
+    HA-->>Alice: "Should I introduce Bob and Carol?"
+    Alice->>HA: "Yes"
+    HA->>S: introduce_peers() → createRoom + context messages
+    Note over S: Room created, invites pending
+
+    Bob->>HB: "check who you know, reach out"
+    HB->>S: /sync → sees invite → auto-join
+    HB->>S: read messages → extract context
+    HB->>S: send message to room
+    Note over S: Bob's audit request in room
+
+    Carol->>HC: "check messages, respond"
+    HC->>S: /sync → sees invite → auto-join
+    HC->>S: read messages → sees Bob's request
+    HC->>S: send response to room
+    Note over S: Carol's proposal in room
+
+    Bob->>HB: "what did Carol's agent say?"
+    HB->>S: /sync → read messages
+    HB-->>Bob: "Timeline: 2 weeks, Cost: $15-25K,<br/>Questions about codebase access..."
+</pre>
+</div>
+
+<div class="card">
+<h2>What This Proves</h2>
+<table>
+<tr><th>Claim</th><th>Evidence</th></tr>
+<tr><td>Sparks surface introduction opportunities</td><td class="good">Alice's agent detected Bob needs + Carol offers without being told</td></tr>
+<tr><td>Agents discover peers automatically</td><td class="good">Both agents auto-joined and extracted context on first <code>list_peers()</code></td></tr>
+<tr><td>Introduction context flows through</td><td class="good">Bob knew Carol's expertise; Carol knew Bob's project details</td></tr>
+<tr><td>Agents converse via peer abstraction</td><td class="good">3 messages exchanged via <code>send_to_peer</code>/<code>check_messages</code></td></tr>
+<tr><td>Agents recall conversation content</td><td class="good">Bob accurately summarized Carol's proposal on demand</td></tr>
+<tr><td>Independent agent instances</td><td class="good">3 separate containers, own credentials, own plugin instances</td></tr>
+</table>
+</div>
+
+<footer>hermes-introducer &mdash; hive mind, April 2026</footer>
+</main>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({startOnLoad:true,theme:'base',themeVariables:{primaryColor:'#fdd5d8',primaryTextColor:'#3d2b2b',primaryBorderColor:'#f5c6c6',lineColor:'#e05a6d',secondaryColor:'#e8f5ea',tertiaryColor:'#fdf6f0',noteBkgColor:'#f0faf2',noteTextColor:'#4a6b50',noteBorderColor:'#b8e6c4',actorBkg:'#fff0f3',actorBorder:'#e05a6d',actorTextColor:'#3d2b2b',signalColor:'#d1365b',signalTextColor:'#3d2b2b'},sequence:{mirrorActors:false,messageMargin:40}});
+</script>
+</body>
+</html>

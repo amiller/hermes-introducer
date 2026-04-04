@@ -1,0 +1,52 @@
+# Isolated test: 3 hermes agents + Conduit Matrix server
+#
+# Humans: Alice, Bob, Carol (operators)
+# Agents: hermes-of-alice, hermes-of-bob, hermes-of-carol
+#
+# Build:  docker compose -f docker-compose.agent-test.yml build
+# Start:  docker compose -f docker-compose.agent-test.yml up conduit -d
+# Setup:  python3 agent-test/scenario.py
+# Run:    docker compose -f docker-compose.agent-test.yml --env-file agent-test/.env.agents up -d
+# Chat:   docker exec -it hermes-introducer-hermes-of-bob-1 hermes chat
+
+services:
+  conduit:
+    image: matrixconduit/matrix-conduit:latest
+    ports: ["6167:6167"]
+    volumes:
+      - ./conduit.toml:/etc/conduit.toml
+      - conduit-agent-test:/var/lib/conduit
+    environment:
+      CONDUIT_CONFIG: /etc/conduit.toml
+
+  hermes-of-alice: &agent
+    build:
+      context: .
+      dockerfile: agent-test/Dockerfile
+    environment: &agent-env
+      HERMES_MODEL: zai/glm-4.7
+      GLM_API_KEY: ${ZAI_API_KEY}
+      GLM_BASE_URL: https://api.z.ai/api/coding/paas/v4
+      MATRIX_HOMESERVER: http://conduit:6167
+      MATRIX_USER_ID: ${ALICE_USER_ID}
+      MATRIX_ACCESS_TOKEN: ${ALICE_ACCESS_TOKEN}
+    depends_on: [conduit]
+    stdin_open: true
+    tty: true
+
+  hermes-of-bob:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      MATRIX_USER_ID: ${BOB_USER_ID}
+      MATRIX_ACCESS_TOKEN: ${BOB_ACCESS_TOKEN}
+
+  hermes-of-carol:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      MATRIX_USER_ID: ${CAROL_USER_ID}
+      MATRIX_ACCESS_TOKEN: ${CAROL_ACCESS_TOKEN}
+
+volumes:
+  conduit-agent-test:

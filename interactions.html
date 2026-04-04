@@ -1,0 +1,1059 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>hermes-introducer: Interaction &amp; Architecture Deep Dive</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    background: #0d1117;
+    color: #c9d1d9;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem;
+  }
+  h1 { color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 0.5rem; }
+  h2 { color: #79c0ff; margin-top: 3rem; }
+  h3 { color: #d2a8ff; margin-top: 2rem; }
+  .scenario {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+  }
+  .scenario p { color: #8b949e; font-size: 0.9rem; margin: 0 0 1rem 0; }
+  .tag {
+    display: inline-block;
+    font-size: 0.75rem;
+    padding: 2px 8px;
+    border-radius: 12px;
+    margin-right: 4px;
+  }
+  .happy { background: #238636; color: #fff; }
+  .edge  { background: #9e6a03; color: #fff; }
+  .fail  { background: #da3633; color: #fff; }
+  .info  { background: #1f6feb; color: #fff; }
+  .arch  { background: #8b5cf6; color: #fff; }
+  .legend { display: flex; gap: 1rem; margin: 1rem 0 2rem 0; flex-wrap: wrap; }
+  .mermaid { background: #0d1117; }
+  .takeaway {
+    background: #1c2128;
+    border-left: 3px solid #58a6ff;
+    padding: 0.5rem 1rem;
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: #8b949e;
+  }
+  .wire-data {
+    background: #1c2128;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 1rem;
+    margin: 0.75rem 0;
+    font-size: 0.8rem;
+    overflow-x: auto;
+  }
+  .wire-data pre { margin: 0; color: #7ee787; white-space: pre-wrap; }
+  .wire-data .label { color: #79c0ff; font-weight: bold; display: block; margin-bottom: 0.3rem; }
+  table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; }
+  th, td { border: 1px solid #30363d; padding: 0.5rem; text-align: left; font-size: 0.85rem; }
+  th { background: #161b22; color: #79c0ff; }
+  td { color: #c9d1d9; }
+  .toc { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.5rem; margin: 1rem 0; }
+  .toc a { color: #58a6ff; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc ul { margin: 0; padding-left: 1.5rem; }
+  .toc li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+
+<h1>hermes-introducer: Interaction &amp; Architecture Deep Dive</h1>
+<p>How Matrix client-server communication actually works under the hood, tested against a live Conduit v0.10.12 instance.</p>
+
+<div class="legend">
+  <span class="tag happy">Happy Path</span>
+  <span class="tag edge">Edge Case</span>
+  <span class="tag fail">Failure Mode</span>
+  <span class="tag info">Trust Semantic</span>
+  <span class="tag arch">Architecture</span>
+</div>
+
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+  <li><a href="#part1">Part I: Client-Server Architecture</a> &mdash; sync loop, long-poll, sliding sync, transport</li>
+  <li><a href="#part2">Part II: Event Delivery Deep Dive</a> &mdash; how invites, messages, typing, receipts actually arrive</li>
+  <li><a href="#part3">Part III: 14 Interaction Scenarios</a> &mdash; full flow, rejections, kicks, bans, room death</li>
+  <li><a href="#part4">Part IV: Trust State Machine</a> &mdash; complete state transitions</li>
+</ul>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="part1">Part I: Client-Server Architecture</h2>
+
+<h3>The Sync Loop (How Clients Get Events)</h3>
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> Matrix does NOT use WebSockets, SSE, or pub/sub. It uses <strong>HTTP long-polling</strong> via the <code>/sync</code> endpoint.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Agent (Client)
+    participant S as Conduit Server
+
+    Note over C,S: Phase 1: Initial Sync (full state download)
+    C->>S: GET /sync?timeout=0
+    S-->>C: {rooms, presence, next_batch: "token_1"}
+    Note over C: Client now has full state snapshot
+
+    Note over C,S: Phase 2: Long-Poll Loop (incremental updates)
+    loop Every sync cycle
+        C->>S: GET /sync?since=token_1&timeout=30000
+        Note over S: Server BLOCKS here.<br/>Connection stays open.<br/>Waits up to 30s for new events.
+        alt New event arrives
+            S-->>C: {rooms: {join: {timeline: [event]}}, next_batch: "token_2"}
+            Note over C: Response arrives INSTANTLY when event occurs
+        else Timeout (no events)
+            S-->>C: {next_batch: "token_1"} (empty diff)
+            Note over C: Re-issue sync immediately
+        end
+    end
+</pre>
+<div class="takeaway">
+<strong>Key insight:</strong> There is no push channel. The client holds an HTTP connection open. The server blocks the response until either (a) a new event arrives for this user, or (b) the timeout expires. This is classic HTTP long-polling &mdash; one pending request at a time, re-issued after each response.
+</div>
+</div>
+
+<h3>What's in a Sync Response?</h3>
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> The sync response is a single JSON blob containing everything that changed since the last sync token.</p>
+<div class="wire-data">
+<span class="label">GET /sync?since=token&amp;timeout=30000 &rarr; 200 OK</span>
+<pre>{
+  "next_batch": "2705",          // Use as 'since' for next sync
+  "rooms": {
+    "join": {                     // Rooms you're a member of
+      "!roomid:localhost": {
+        "timeline": {             // New messages
+          "events": [{
+            "type": "m.room.message",
+            "sender": "@alice:localhost",
+            "content": {"body": "Hello!", "msgtype": "m.text"},
+            "event_id": "$abc123",
+            "origin_server_ts": 1775225522000
+          }],
+          "prev_batch": "2700",   // Pagination token for history
+          "limited": false        // true = gap in timeline, need to paginate
+        },
+        "state": { "events": [] },          // Room state changes (name, topic, etc)
+        "ephemeral": { "events": [{         // Typing, receipts (NOT persisted)
+          "type": "m.typing",
+          "content": {"user_ids": ["@alice:localhost"]}
+        }]},
+        "unread_notifications": {
+          "notification_count": 1,  // Unread count (server-side via push rules)
+          "highlight_count": 0      // @mentions
+        }
+      }
+    },
+    "invite": {                   // Rooms you've been invited to
+      "!otherroomid:localhost": {
+        "invite_state": { "events": [
+          {"type": "m.room.name", "content": {"name": "Introduction Room"}},
+          {"type": "m.room.member", "sender": "@alice:localhost",
+           "content": {"membership": "invite"}}
+        ]}
+      }
+    },
+    "leave": {}                   // Rooms you've left (for cleanup)
+  },
+  "presence": { "events": [] }   // Online/offline status of contacts
+}</pre>
+</div>
+<div class="takeaway">
+Everything comes through one endpoint. Invites, messages, typing indicators, read receipts, room state changes, presence &mdash; all packed into a single JSON response. The client unpacks and routes to appropriate handlers.
+</div>
+</div>
+
+<h3>Long-Poll Timing (Verified on Conduit)</h3>
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> Actual measured behavior from our test server.</p>
+<table>
+<tr><th>Scenario</th><th>Measured Latency</th><th>What Happened</th></tr>
+<tr><td>Initial sync (no since token)</td><td>0.001s</td><td>Immediate: full state snapshot, no blocking</td></tr>
+<tr><td>Long-poll, no events, timeout=5s</td><td>5.002s</td><td>Blocked exactly until timeout, returned empty diff</td></tr>
+<tr><td>Long-poll, invite arrives</td><td>0.002s</td><td>Returned instantly when event was already queued</td></tr>
+<tr><td>Long-poll, message sent after 1s</td><td>1.008s</td><td>Blocked ~1s, woke when alice sent message</td></tr>
+<tr><td>3 concurrent long-polls, message after 2s</td><td>2.01s (all 3)</td><td>ALL THREE woke simultaneously</td></tr>
+</table>
+<div class="takeaway">
+<strong>Multiple clients/devices:</strong> If an agent has 3 sync connections open (e.g., different processes or devices), ALL of them receive the event simultaneously. The server maintains a per-user event queue, not per-connection.
+</div>
+</div>
+
+<h3>Traditional Sync vs Sliding Sync</h3>
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> Conduit supports both. Sliding Sync is the modern replacement.</p>
+<pre class="mermaid">
+graph TB
+    subgraph "Traditional Sync (/sync)"
+        direction TB
+        TS1["Initial sync downloads<br/>ALL room state"] --> TS2["Every incremental sync<br/>returns ALL rooms with changes"]
+        TS2 --> TS3["Client must process<br/>every room, every time"]
+        TS3 --> TS4["Cost grows linearly<br/>with number of rooms"]
+    end
+
+    subgraph "Sliding Sync (MSC3575)"
+        direction TB
+        SS1["Client requests a WINDOW<br/>e.g., rooms 0-20 sorted by activity"] --> SS2["Server returns only<br/>those rooms + timeline"]
+        SS2 --> SS3["Window slides as<br/>rooms change position"]
+        SS3 --> SS4["Cost is O(window size),<br/>not O(total rooms)"]
+    end
+
+    style TS1 fill:#da3633,color:#fff
+    style TS4 fill:#da3633,color:#fff
+    style SS1 fill:#238636,color:#fff
+    style SS4 fill:#238636,color:#fff
+</pre>
+<div class="wire-data">
+<span class="label">POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync</span>
+<pre>Request:
+{
+  "lists": {
+    "all_rooms": {
+      "ranges": [[0, 20]],           // Show me rooms 0-20
+      "required_state": [["m.room.name", ""]],  // Include room names
+      "timeline_limit": 3            // Last 3 events per room
+    }
+  }
+}
+
+Response:
+{
+  "pos": "2706",                     // Sliding sync position token
+  "lists": {
+    "all_rooms": { "count": 1, "ops": [] }
+  },
+  "rooms": {
+    "!roomid:localhost": {
+      "name": "Deep Sync",
+      "timeline": [                  // Only the last 3 events
+        {"type": "m.room.member", "content": {"membership": "invite"}},
+        {"type": "m.room.member", "content": {"membership": "join"}},
+        {"type": "m.room.message", "content": {"body": "Deep dive message 1"}}
+      ]
+    }
+  }
+}</pre>
+</div>
+<div class="takeaway">
+Sliding Sync is dramatically more efficient for agents in many rooms. An agent in 500 introduction rooms only syncs the 20 most recently active ones, not all 500. Conduit supports this via the <code>org.matrix.simplified_msc3575</code> unstable feature.
+</div>
+</div>
+
+<h3>Transport Layer: What's NOT Used</h3>
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> Common misconceptions about Matrix transport.</p>
+<table>
+<tr><th>Technology</th><th>Used?</th><th>Why / Why Not</th></tr>
+<tr><td><strong>HTTP Long-Poll</strong></td><td style="color:#7ee787">YES</td><td>The ONLY mechanism. Client sends GET /sync, server blocks until events arrive or timeout.</td></tr>
+<tr><td>WebSocket</td><td style="color:#f85149">NO</td><td>MSC3575 proposed WebSocket transport but it's not implemented. Long-poll is simpler and works everywhere.</td></tr>
+<tr><td>Server-Sent Events (SSE)</td><td style="color:#f85149">NO</td><td>Not part of Matrix spec. Would be one-directional anyway.</td></tr>
+<tr><td>Pub/Sub (MQTT, AMQP, etc.)</td><td style="color:#f85149">NO</td><td>Matrix uses its own sync protocol. No message broker between client and server.</td></tr>
+<tr><td>gRPC / Protocol Buffers</td><td style="color:#f85149">NO</td><td>Pure JSON over HTTP. Simple but verbose.</td></tr>
+<tr><td>Push Notifications</td><td style="color:#d29922">OPTIONAL</td><td>Server can push to FCM/APNs via push gateway, but agents don't use mobile push. Push rules exist for notification counting.</td></tr>
+</table>
+<div class="takeaway">
+For AI agents, this is actually ideal. Long-poll is simple: one HTTP request, one response, repeat. No connection state to manage, no reconnection logic beyond re-issuing the GET. An agent's sync loop is literally a <code>while True</code> with one HTTP call.
+</div>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="part2">Part II: Event Delivery Deep Dive</h2>
+
+<h3>How Invites Arrive</h3>
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> <span class="tag info">Trust Semantic</span> The invite flow from wire to client.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice (Introducer)
+    participant S as Conduit Server
+    participant B as Bob (long-polling)
+
+    Note over B,S: Bob has a pending GET /sync?since=X&timeout=30000
+
+    A->>S: POST /createRoom {invite: [bob]}
+    Note over S: Server creates room events:<br/>1. m.room.create<br/>2. m.room.power_levels<br/>3. m.room.join_rules (invite)<br/>4. m.room.history_visibility (shared)<br/>5. m.room.name<br/>6. m.room.member (alice=join)<br/>7. m.room.member (bob=invite)
+
+    S-->>A: {room_id: "!abc"}
+
+    Note over S: Server wakes Bob's pending sync
+
+    S-->>B: Sync response with rooms.invite
+    Note over B: Bob's sync returns immediately<br/>with invite_state containing:<br/>- room name<br/>- who invited (alice)<br/>- membership = "invite"
+
+    B->>B: Agent decides: accept or reject?
+
+    alt Accept
+        B->>S: POST /join/!abc {}
+        S-->>B: {room_id: "!abc"}
+        Note over B: Next sync shows room in rooms.join<br/>with full timeline history
+    else Reject
+        B->>S: POST /rooms/!abc/leave {}
+        S-->>B: {}
+        Note over B: Room disappears from sync
+    end
+</pre>
+<div class="wire-data">
+<span class="label">Invite as it appears in Bob's sync response:</span>
+<pre>"invite": {
+  "!abc:localhost": {
+    "invite_state": {
+      "events": [
+        {
+          "type": "m.room.name",
+          "content": {"name": "Introduction: Bob meets Carol"},
+          "sender": "@alice:localhost"
+        },
+        {
+          "type": "m.room.member",
+          "state_key": "@bob:localhost",
+          "content": {"membership": "invite"},
+          "sender": "@alice:localhost"      // Who invited you
+        }
+      ]
+    }
+  }
+}</pre>
+</div>
+<div class="takeaway">
+The invite arrives as a <strong>stripped state snapshot</strong>: room name, join rules, who invited you. NOT the full timeline &mdash; you can't read messages until you join. This is intentional: the invite is a proposal, not access.
+</div>
+</div>
+
+<h3>How Messages Arrive (Real-Time)</h3>
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> Message delivery through the long-poll mechanism.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice
+    participant S as Conduit Server
+    participant B as Bob
+    participant C as Carol
+
+    Note over B,S: Bob: GET /sync?since=X&timeout=30000 (pending)
+    Note over C,S: Carol: GET /sync?since=Y&timeout=30000 (pending)
+
+    A->>S: PUT /rooms/!r/send/m.room.message/txn1<br/>{"body": "Hello both!"}
+    S-->>A: {event_id: "$evt1"}
+
+    Note over S: Server appends event to room DAG.<br/>Evaluates push rules for each member.<br/>Wakes ALL pending syncs for members.
+
+    par Simultaneous delivery
+        S-->>B: Sync response with timeline event
+        S-->>C: Sync response with timeline event
+    end
+
+    Note over B: Bob processes event, re-issues sync
+    Note over C: Carol processes event, re-issues sync
+</pre>
+<div class="wire-data">
+<span class="label">Message event in sync response:</span>
+<pre>"join": {
+  "!roomid:localhost": {
+    "timeline": {
+      "events": [{
+        "type": "m.room.message",
+        "event_id": "$evt1",
+        "sender": "@alice:localhost",
+        "origin_server_ts": 1775225522000,    // Unix ms timestamp
+        "content": {
+          "body": "Hello both!",
+          "msgtype": "m.text"
+        }
+      }],
+      "prev_batch": "2700",     // Use to paginate backwards
+      "limited": false          // false = no gap. true = events were dropped, paginate to fill
+    },
+    "unread_notifications": {
+      "notification_count": 1,  // Incremented by push rules
+      "highlight_count": 0      // Would be 1 if message contained @bob
+    }
+  }
+}</pre>
+</div>
+<div class="takeaway">
+<strong>Verified:</strong> When Alice sends a message, all 3 of Bob's concurrent long-poll connections woke up at the same time (2.01s each, message sent at 2s). The server maintains a per-user notification queue, not per-connection. Every pending sync for that user gets the event.
+</div>
+</div>
+
+<h3>Ephemeral Events: Typing &amp; Read Receipts</h3>
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> Typing indicators and read receipts are ephemeral &mdash; delivered via sync but NOT persisted in room history.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice
+    participant S as Conduit Server
+    participant B as Bob
+
+    Note over A,B: Both in the same room
+
+    A->>S: PUT /rooms/!r/typing/@alice:localhost<br/>{"typing": true, "timeout": 30000}
+    S-->>A: 200 OK
+
+    Note over S: Server sets typing flag (ephemeral, expires in 30s)
+
+    S-->>B: Sync response with ephemeral event
+    Note over B: rooms.join.!r.ephemeral.events:<br/>[{type: "m.typing", content: {user_ids: ["@alice"]}}]
+
+    Note over A: Alice sends the actual message
+    A->>S: PUT /rooms/!r/send/m.room.message/txn1<br/>{"body": "Done typing"}
+
+    Note over B: Bob reads it
+    B->>S: POST /rooms/!r/receipt/m.read/$evt1 {}
+    S-->>B: 200 OK
+
+    S-->>A: Sync response with receipt
+    Note over A: rooms.join.!r.ephemeral.events:<br/>[{type: "m.receipt",<br/> content: {"$evt1": {"m.read": {"@bob": {"ts": 1775...}}}}}]
+</pre>
+<div class="wire-data">
+<span class="label">Typing indicator in sync (verified on Conduit):</span>
+<pre>"ephemeral": {
+  "events": [{
+    "type": "m.typing",
+    "content": {
+      "user_ids": ["@alice:localhost"]    // Currently typing users
+    }
+  }]
+}
+
+Read receipt in sync:
+"ephemeral": {
+  "events": [{
+    "type": "m.receipt",
+    "content": {
+      "$qg2kAqv...": {                   // Event that was read
+        "m.read": {
+          "@bob:localhost": {
+            "ts": 1775225522089           // When they read it
+          }
+        }
+      }
+    }
+  }]
+}</pre>
+</div>
+<div class="takeaway">
+Ephemeral events ride the same sync response but are in a separate <code>ephemeral</code> section. They're never stored in the room DAG. If you miss a typing indicator (offline when it was sent), you simply don't see it. Read receipts are delivered to other room members so they know you've read up to event X.
+</div>
+</div>
+
+<h3>Sync Filters: Reducing Bandwidth</h3>
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> Clients can create server-side filters to reduce sync payload.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Agent Client
+    participant S as Conduit Server
+
+    C->>S: POST /user/@bob/filter<br/>{"room":{"timeline":{"types":["m.room.message"],"limit":5},<br/>"ephemeral":{"types":[]}},"presence":{"types":[]}}
+    S-->>C: {"filter_id": "fc8N"}
+
+    C->>S: GET /sync?filter=fc8N&since=X&timeout=30000
+    Note over S: Server applies filter:<br/>- Only m.room.message in timeline<br/>- No ephemeral events (typing/receipts)<br/>- No presence updates<br/>- Max 5 events per room
+    S-->>C: Filtered sync response (much smaller)
+</pre>
+<div class="takeaway">
+For agents that only care about messages (not typing or presence), filters dramatically reduce sync payload. An agent with filter <code>fc8N</code> gets only <code>m.room.message</code> events, skipping room state changes, typing, receipts, and presence entirely. Filter is stored server-side &mdash; pass the ID on every sync.
+</div>
+</div>
+
+<h3>Server Architecture: Inside Conduit</h3>
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> How Conduit processes events internally.</p>
+<pre class="mermaid">
+graph TB
+    subgraph "Client Requests"
+        C1["Agent A<br/>/sync (pending)"]
+        C2["Agent B<br/>/sync (pending)"]
+        C3["Agent C<br/>PUT /send message"]
+    end
+
+    subgraph "Conduit Server (Single Process)"
+        direction TB
+        API["HTTP API Layer<br/>(async Rust, tokio)"]
+        AUTH["Auth Check<br/>(access token → user)"]
+
+        subgraph "Event Processing"
+            VALIDATE["State Resolution<br/>(auth rules check)"]
+            DAG["Room DAG<br/>(append event)"]
+            PUSH["Push Rule Engine<br/>(evaluate per-member)"]
+        end
+
+        subgraph "Storage"
+            ROCKS["RocksDB<br/>(rooms, events, state)"]
+            NOTIFY["Notification Queue<br/>(per-user wakeup)"]
+        end
+    end
+
+    C3 --> API --> AUTH --> VALIDATE
+    VALIDATE --> DAG --> ROCKS
+    DAG --> PUSH --> NOTIFY
+    NOTIFY -.->|"wake"| C1
+    NOTIFY -.->|"wake"| C2
+    C1 --> API
+    C2 --> API
+
+    style NOTIFY fill:#1f6feb,color:#fff
+    style DAG fill:#238636,color:#fff
+    style ROCKS fill:#9e6a03,color:#fff
+</pre>
+<div class="takeaway">
+Conduit is a single Rust process using async I/O (tokio). When Agent C sends a message: (1) auth check, (2) state resolution validates the event is authorized, (3) event appended to room DAG in RocksDB, (4) push rules evaluated for each room member, (5) notification queue wakes all pending syncs for affected users. All in one process, all in memory except the RocksDB write.
+</div>
+</div>
+
+<h3>Conduit vs Synapse: Architecture Comparison</h3>
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> Why we use Conduit for dev and Synapse for production.</p>
+<pre class="mermaid">
+graph LR
+    subgraph "Conduit (Dev)"
+        direction TB
+        C_PROC["Single Rust Binary"]
+        C_DB["RocksDB (embedded)"]
+        C_PROC --> C_DB
+    end
+
+    subgraph "Synapse (Production)"
+        direction TB
+        S_MAIN["Main Process<br/>(Python/Twisted)"]
+        S_SYNC["Synchrotron Worker<br/>(/sync requests)"]
+        S_FED["Federation Worker<br/>(server-to-server)"]
+        S_MEDIA["Media Worker<br/>(uploads/downloads)"]
+        S_REDIS["Redis<br/>(event replication)"]
+        S_PG["PostgreSQL"]
+
+        S_MAIN --> S_REDIS
+        S_SYNC --> S_REDIS
+        S_FED --> S_REDIS
+        S_MEDIA --> S_REDIS
+        S_REDIS -.-> S_MAIN
+        S_REDIS -.-> S_SYNC
+        S_MAIN --> S_PG
+        S_SYNC --> S_PG
+        S_FED --> S_PG
+    end
+
+    style C_PROC fill:#238636,color:#fff
+    style C_DB fill:#238636,color:#fff
+    style S_MAIN fill:#1f6feb,color:#fff
+    style S_REDIS fill:#da3633,color:#fff
+    style S_PG fill:#9e6a03,color:#fff
+</pre>
+<table>
+<tr><th></th><th>Conduit (Dev/Ephemeral)</th><th>Synapse (Production)</th></tr>
+<tr><td>Language</td><td>Rust (async, tokio)</td><td>Python (Twisted)</td></tr>
+<tr><td>Database</td><td>RocksDB (embedded, zero config)</td><td>PostgreSQL (required)</td></tr>
+<tr><td>Memory (3 users)</td><td>~50 MB</td><td>~500 MB</td></tr>
+<tr><td>Scaling</td><td>Single process, ~500 users max</td><td>Multi-worker, 10,000+ users</td></tr>
+<tr><td>OAuth/OIDC</td><td>No</td><td>Yes (GitHub, Google, etc.)</td></tr>
+<tr><td>Registration tokens</td><td>No</td><td>Yes</td></tr>
+<tr><td>Sliding Sync</td><td>Yes (simplified)</td><td>Yes (production)</td></tr>
+<tr><td>Federation</td><td>Yes</td><td>Yes (with workers)</td></tr>
+<tr><td>Startup time</td><td>&lt;1 second</td><td>~10 seconds</td></tr>
+</table>
+<div class="takeaway">
+For agent introductions: Conduit is perfect for ephemeral, disposable servers. Spin up, introduce agents, tear down. For persistent agent networks with OAuth and scaling: Synapse with workers.
+</div>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="part3">Part III: 14 Interaction Scenarios</h2>
+
+<h3>1. Full Introduction Flow</h3>
+<div class="scenario">
+<p><span class="tag happy">Happy Path</span> Complete 3-agent lifecycle: introduce, join, exchange messages.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice (Introducer)
+    participant S as Matrix Server
+    participant B as Bob
+    participant C as Carol
+
+    Note over B,S: Bob: GET /sync (pending long-poll)
+    Note over C,S: Carol: GET /sync (pending long-poll)
+
+    A->>S: POST /createRoom<br/>{name: "Intro: Bob meets Carol",<br/>invite: [@bob, @carol]}
+    S-->>A: {room_id: "!abc"}
+
+    par Sync wakes both
+        S-->>B: rooms.invite: {!abc: {invite_state: [name, inviter]}}
+        S-->>C: rooms.invite: {!abc: {invite_state: [name, inviter]}}
+    end
+
+    A->>S: PUT /send m.room.message<br/>"About Bob: code reviewer, Rust"
+    A->>S: PUT /send m.room.message<br/>"About Carol: security, TEE"
+
+    B->>S: POST /join/!abc {}
+    S-->>B: {room_id: "!abc"}
+    Note over B: Next sync: room moves from<br/>rooms.invite → rooms.join<br/>with full timeline history
+
+    C->>S: POST /join/!abc {}
+    S-->>C: {room_id: "!abc"}
+
+    B->>S: PUT /send "I could use a security review"
+    S-->>C: Sync: timeline event in rooms.join.!abc
+
+    C->>S: PUT /send "Happy to help"
+    S-->>B: Sync: timeline event in rooms.join.!abc
+
+    Note over A,C: All 3 members, all see everything
+</pre>
+<div class="takeaway">Trust mapping: invite = propose connection, join = accept, room persists as shared channel.</div>
+</div>
+
+<h3>2. Context Visible Before Join</h3>
+<div class="scenario">
+<p><span class="tag happy">Happy Path</span> Messages posted before agents join are visible when they eventually join (history_visibility=shared).</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice (Introducer)
+    participant S as Matrix Server
+    participant B as Bob
+
+    A->>S: POST /createRoom {invite: [B, C]}
+    A->>S: PUT /send "About Bob..."
+    A->>S: PUT /send "About Carol..."
+    A->>S: PUT /send "You two should connect"
+
+    Note over B: Bob hasn't joined yet.<br/>These messages are stored in the room DAG.
+
+    B->>S: POST /join/!abc {}
+    B->>S: GET /rooms/!abc/messages?dir=b&limit=50
+    S-->>B: All 3 messages visible
+
+    Note over B: history_visibility=shared means<br/>members see events from BEFORE they joined
+</pre>
+<div class="takeaway">Room default is <code>history_visibility: shared</code>. This means any member (even late joiners) can read the full room history. This is critical for introductions &mdash; the context must be readable.</div>
+</div>
+
+<h3>3. Agent Rejects Invite</h3>
+<div class="scenario">
+<p><span class="tag edge">Edge Case</span> One agent rejects. Room continues for the other.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice (Introducer)
+    participant S as Matrix Server
+    participant B as Bob
+    participant C as Carol
+
+    A->>S: POST /createRoom {invite: [B, C]}
+    A->>S: PUT /send intro context
+
+    B->>S: POST /join → joined
+    C->>S: POST /rooms/!abc/leave {}
+    Note over C: Rejection = leave before joining.<br/>Carol's membership: invite → leave
+
+    Note over S: Carol's next sync:<br/>room disappears from rooms.invite
+
+    B->>S: PUT /send "Guess it's just us"
+    Note over A,B: Room continues: Alice + Bob
+</pre>
+<div class="takeaway">Leave-before-join = decline the introduction. Non-destructive. The room continues for other participants.</div>
+</div>
+
+<h3>4. Rejected Agent Cannot Rejoin</h3>
+<div class="scenario">
+<p><span class="tag fail">Failure Mode</span> <span class="tag info">Trust Semantic</span> Invite-only room enforces: once rejected, no re-entry without new invite.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Carol
+    participant S as Matrix Server
+
+    Note over C: Carol was invited, then left (rejected)
+
+    C->>S: POST /join/!abc {}
+    S-->>C: 403 M_FORBIDDEN<br/>"Event is not authorized"
+
+    Note over C: join_rules = "invite"<br/>Carol's membership = "leave"<br/>Only "invite" membership allows join
+</pre>
+<div class="takeaway">Rejection is meaningful and irreversible without re-invitation. The server enforces this via state resolution: join requires membership=invite, but Carol's membership is now "leave".</div>
+</div>
+
+<h3>5. Re-invite After Rejection</h3>
+<div class="scenario">
+<p><span class="tag edge">Edge Case</span> Recovery path: introducer re-invites a rejecting agent.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice
+    participant S as Matrix Server
+    participant C as Carol
+
+    C->>S: POST /leave (reject)
+    Note over C: membership: invite → leave
+
+    A->>S: POST /rooms/!abc/invite<br/>{user_id: "@carol"}
+    Note over S: membership: leave → invite
+
+    S-->>C: Sync: room reappears in rooms.invite
+
+    C->>S: POST /join/!abc {}
+    S-->>C: ✓ joined
+    Note over C: Sees ALL original intro messages
+</pre>
+<div class="takeaway">Re-invitation resets the membership state from "leave" back to "invite", allowing join. Full history is preserved.</div>
+</div>
+
+<h3>6. Agent Leaves After Joining</h3>
+<div class="scenario">
+<p><span class="tag edge">Edge Case</span> Participated, then left. Messages persist. No re-entry.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant B as Bob
+    participant S as Matrix Server
+    participant C as Carol
+
+    Note over B,C: Both joined, exchanged messages
+
+    B->>S: PUT /send "Here's my analysis"
+    C->>S: PUT /send "Thanks, I'll review"
+
+    B->>S: POST /rooms/!abc/leave {}
+    Note over B: membership: join → leave
+
+    B->>S: POST /join/!abc {}
+    S-->>B: 403 M_FORBIDDEN
+    Note over B: Can't rejoin invite-only room
+
+    C->>S: GET /messages
+    S-->>C: Still sees "Here's my analysis"
+    Note over C: Bob's messages are immutable<br/>in the room DAG
+</pre>
+<div class="takeaway">Leaving is a one-way door. Messages are immutable in the DAG &mdash; they persist regardless of membership changes.</div>
+</div>
+
+<h3>7. Both Agents Reject</h3>
+<div class="scenario">
+<p><span class="tag fail">Failure Mode</span> Failed introduction. Nobody accepted.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice
+    participant S as Matrix Server
+    participant B as Bob
+    participant C as Carol
+
+    A->>S: POST /createRoom {invite: [B, C]}
+    A->>S: PUT /send intro context
+
+    B->>S: POST /leave ✗
+    C->>S: POST /leave ✗
+
+    Note over S: Members:<br/>Alice = join<br/>Bob = leave<br/>Carol = leave
+
+    A->>S: PUT /send "Nobody showed up"
+    Note over A: Introducer is alone.<br/>Can re-invite or abandon.
+</pre>
+<div class="takeaway">Failed introduction. The room is a dead letter. Introducer can re-invite both or leave (killing the room).</div>
+</div>
+
+<h3>8. Introducer Leaves ("Step Back")</h3>
+<div class="scenario">
+<p><span class="tag happy">Happy Path</span> <span class="tag info">Trust Semantic</span> The canonical pattern: introduce, then exit.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice (Introducer)
+    participant S as Matrix Server
+    participant B as Bob
+    participant C as Carol
+
+    A->>S: POST /createRoom + intro context
+    B->>S: POST /join
+    C->>S: POST /join
+
+    A->>S: POST /rooms/!abc/leave {}
+    Note over A: Introducer steps back.<br/>Job done.
+
+    B->>S: PUT /send "Alice left, we can keep talking"
+    S-->>C: Sync: Bob's message
+
+    Note over S: Members:<br/>Alice = leave<br/>Bob = join ← has power_level inherited<br/>Carol = join
+
+    Note over B,C: Room belongs to Bob and Carol now.<br/>They can invite others, change settings, etc.
+</pre>
+<div class="takeaway">The canonical introducer pattern. But note: Alice was the room creator with default power_level 100. When she leaves, Bob and Carol have power_level 0. They can send messages but may not be able to change room settings unless power_levels were adjusted before Alice left.</div>
+</div>
+
+<h3>9. Everyone Leaves — Room Dies</h3>
+<div class="scenario">
+<p><span class="tag fail">Failure Mode</span> Abandoned room becomes permanently sealed.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice
+    participant S as Matrix Server
+    participant B as Bob
+
+    B->>S: POST /leave
+    A->>S: POST /leave
+
+    Note over S: All members have left.<br/>No one has membership=join.<br/>join_rules=invite but no one can invite.
+
+    A->>S: POST /join/!abc {}
+    S-->>A: Error: "No server available to assist in joining"
+
+    B->>S: POST /join/!abc {}
+    S-->>B: 403 M_FORBIDDEN
+
+    Note over S: Room data persists in RocksDB<br/>but is permanently inaccessible.<br/>Events are still stored but unreachable.
+</pre>
+<div class="takeaway">Ephemeral by design. Room data persists on disk but is inaccessible. For disposable introduction rooms, this is the right behavior &mdash; the connection either takes hold or it doesn't.</div>
+</div>
+
+<h3>10. Kick Agent</h3>
+<div class="scenario">
+<p><span class="tag edge">Edge Case</span> <span class="tag info">Trust Semantic</span> Reversible removal.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice (power_level 100)
+    participant S as Matrix Server
+    participant B as Bob (power_level 0)
+
+    A->>S: POST /rooms/!abc/kick<br/>{user_id: "@bob", reason: "misbehaving"}
+    Note over S: Server checks: Alice power_level (100)<br/>>= kick power_level (50). Authorized.
+    S-->>B: Sync: membership changed to "leave"
+
+    B->>S: POST /join/!abc {}
+    S-->>B: 403 M_FORBIDDEN
+
+    A->>S: POST /rooms/!abc/invite {user_id: "@bob"}
+    S-->>B: Sync: rooms.invite reappears
+
+    B->>S: POST /join/!abc {}
+    S-->>B: ✓ rejoined
+</pre>
+<div class="takeaway">Kick sets membership to "leave" (same as voluntary leave). Reversible via re-invite. Requires sufficient power_level (default: 50 to kick).</div>
+</div>
+
+<h3>11. Ban Agent</h3>
+<div class="scenario">
+<p><span class="tag fail">Failure Mode</span> <span class="tag info">Trust Semantic</span> Permanent removal. Even re-invite fails.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice (power_level 100)
+    participant S as Matrix Server
+    participant B as Bob
+
+    A->>S: POST /rooms/!abc/ban<br/>{user_id: "@bob", reason: "permanent"}
+    Note over S: Bob membership: join → ban
+
+    B->>S: POST /join/!abc {}
+    S-->>B: 403 M_FORBIDDEN
+
+    A->>S: POST /rooms/!abc/invite {user_id: "@bob"}
+    S-->>A: 403 M_FORBIDDEN<br/>"Cannot invite banned user"
+
+    Note over B: Only recovery: Alice must POST /rooms/!abc/unban<br/>then re-invite. Two steps, not one.
+</pre>
+<div class="takeaway">Ban is a distinct membership state. Unlike kick (→ leave), ban prevents even re-invitation. Requires explicit unban + re-invite to restore. The nuclear option for trust revocation.</div>
+</div>
+
+<h3>12. Message Ordering</h3>
+<div class="scenario">
+<p><span class="tag happy">Happy Path</span> Strict chronological ordering preserved.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant B as Bob
+    participant S as Matrix Server (DAG)
+    participant C as Carol
+
+    B->>S: message-0 → $evt0 (origin_server_ts: T)
+    B->>S: message-1 → $evt1 (origin_server_ts: T+1)
+    B->>S: message-2 → $evt2 (origin_server_ts: T+2)
+    B->>S: message-3 → $evt3 (origin_server_ts: T+3)
+    B->>S: message-4 → $evt4 (origin_server_ts: T+4)
+
+    Note over S: Events form a linked list in the room DAG.<br/>Each event references its parent via prev_events.
+
+    C->>S: GET /messages?dir=b&limit=5
+    S-->>C: [msg-4, msg-3, msg-2, msg-1, msg-0]
+    Note over C: dir=b (backward): newest first.<br/>dir=f (forward): oldest first.
+</pre>
+<div class="takeaway">Events are ordered by the room DAG (directed acyclic graph). Each event references its parent. On a single server, this is equivalent to insertion order. With federation, DAG resolution handles concurrent events from different servers.</div>
+</div>
+
+<h3>13. Late Joiner Sees Full History</h3>
+<div class="scenario">
+<p><span class="tag happy">Happy Path</span> Agent who joins late sees everything.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice
+    participant S as Matrix Server
+    participant B as Bob
+    participant C as Carol
+
+    A->>S: createRoom + intro context (T=0)
+    B->>S: join (T=1)
+    A->>S: "Bob, meet Carol when she arrives" (T=2)
+    B->>S: "Looking forward to it" (T=3)
+
+    Note over C: Hours pass...
+
+    C->>S: POST /join (T=100)
+    Note over S: Carol's membership: invite → join
+
+    C->>S: GET /sync (or /messages)
+    S-->>C: Full timeline: intro context + all messages
+
+    Note over C: history_visibility=shared<br/>means Carol sees events from before T=100<br/>(even before she existed in the room as "join")
+</pre>
+<div class="takeaway">No information loss. The invitation stands indefinitely. When accepted, full context awaits. This is essential for async agent communication &mdash; agents may not be online at the same time.</div>
+</div>
+
+<h3>14. Multiple Introductions</h3>
+<div class="scenario">
+<p><span class="tag edge">Edge Case</span> Same agents, different contexts, separate rooms.</p>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Alice
+    participant S as Matrix Server
+    participant B as Bob
+
+    A->>S: createRoom("First Intro") → !room1
+    A->>S: send to !room1: "round 1 context"
+
+    A->>S: createRoom("Second Intro") → !room2
+    A->>S: send to !room2: "round 2 context"
+
+    Note over S: !room1 ≠ !room2<br/>Completely independent rooms
+
+    B->>S: join !room1
+    B->>S: messages(!room1) → ["round 1..."]
+
+    B->>S: join !room2
+    B->>S: messages(!room2) → ["round 2..."]
+
+    Note over B: No context bleed between rooms.<br/>Each introduction is isolated.
+</pre>
+<div class="takeaway">Introductions are idempotent in identity but isolated in context. Different reasons to connect = different rooms. An agent might be introduced to the same person multiple times for different purposes.</div>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="part4">Part IV: Trust State Machine</h2>
+
+<div class="scenario">
+<p><span class="tag info">Trust Semantic</span> Complete membership state transitions with recovery paths.</p>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> Invited: invite()
+    Invited --> Joined: join()
+    Invited --> Left: leave() [reject]
+    Joined --> Left: leave() [voluntary]
+    Joined --> Left: kick() [by room admin]
+    Joined --> Banned: ban() [by room admin]
+    Left --> Invited: re-invite()
+    Banned --> Left: unban()
+
+    note right of Invited
+        Agent sees: room name, inviter
+        Cannot see: messages, history
+        Action: join or leave
+    end note
+
+    note right of Joined
+        Agent sees: full timeline, ephemeral
+        Can: send messages, read history
+        Power level determines: kick, ban, invite rights
+    end note
+
+    note right of Left
+        Agent sees: nothing (room hidden)
+        Cannot: rejoin without new invite
+        Messages persist for other members
+    end note
+
+    note right of Banned
+        Agent sees: nothing
+        Cannot: rejoin OR be re-invited
+        Requires explicit unban first
+    end note
+</pre>
+</div>
+
+<div class="scenario">
+<p><span class="tag arch">Architecture</span> Power levels control who can do what.</p>
+<table>
+<tr><th>Action</th><th>Required Power Level</th><th>Default</th><th>Room Creator</th></tr>
+<tr><td>Send messages</td><td>events_default</td><td>0</td><td>100</td></tr>
+<tr><td>Invite users</td><td>invite</td><td>0</td><td>100</td></tr>
+<tr><td>Kick users</td><td>kick</td><td>50</td><td>100</td></tr>
+<tr><td>Ban users</td><td>ban</td><td>50</td><td>100</td></tr>
+<tr><td>Change room name</td><td>state_default</td><td>50</td><td>100</td></tr>
+<tr><td>Change power levels</td><td>power_levels event</td><td>100</td><td>100</td></tr>
+</table>
+<div class="takeaway">
+The introducer (room creator) has power_level 100 by default. Invited agents get power_level 0. They can send messages and invite others, but can't kick, ban, or change room settings. This is the right default for introductions: the introducer retains moderation authority.
+</div>
+</div>
+
+<div class="scenario">
+<p style="text-align:center; color:#58a6ff; font-size:1.1rem; margin:0;">
+<strong>The Agent Sync Loop</strong> &mdash; what an agent's event loop actually looks like
+</p>
+<pre class="mermaid">
+graph TB
+    START["Agent starts"] --> INIT["GET /sync?timeout=0<br/>(initial state)"]
+    INIT --> PROCESS["Process response:<br/>- Check rooms.invite (new intros)<br/>- Check rooms.join.timeline (messages)<br/>- Check ephemeral (typing/receipts)"]
+    PROCESS --> DECIDE{"New invite?"}
+    DECIDE -->|"Yes"| EVALUATE["Evaluate: who invited?<br/>what's the room about?<br/>do I trust the introducer?"]
+    EVALUATE --> JOIN_OR_REJECT{"Accept?"}
+    JOIN_OR_REJECT -->|"Yes"| JOIN["POST /join"]
+    JOIN_OR_REJECT -->|"No"| REJECT["POST /leave"]
+    DECIDE -->|"No"| MSG{"New messages?"}
+    MSG -->|"Yes"| RESPOND["Process & maybe respond"]
+    MSG -->|"No"| POLL
+    JOIN --> POLL
+    REJECT --> POLL
+    RESPOND --> POLL
+    POLL["GET /sync?since=token&timeout=30000<br/>(long-poll, blocks until event)"] --> PROCESS
+
+    style POLL fill:#1f6feb,color:#fff
+    style EVALUATE fill:#9e6a03,color:#fff
+    style JOIN fill:#238636,color:#fff
+    style REJECT fill:#da3633,color:#fff
+</pre>
+<div class="takeaway">
+An agent's entire runtime is: initial sync → process → long-poll → process → long-poll → ... The long-poll blocks until something happens. No polling interval, no wasted requests. When an introduction arrives, the agent evaluates trust (who invited? what context?) and decides to join or reject.
+</div>
+</div>
+
+<p style="color:#484f58; text-align:center; margin-top:3rem; font-size:0.8rem;">
+Generated from live testing against Conduit v0.10.12 &mdash; hermes-introducer project, 2026-04-03
+</p>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      primaryColor: '#1f6feb',
+      primaryTextColor: '#c9d1d9',
+      primaryBorderColor: '#30363d',
+      lineColor: '#58a6ff',
+      secondaryColor: '#161b22',
+      tertiaryColor: '#0d1117',
+      noteBkgColor: '#1c2128',
+      noteTextColor: '#8b949e',
+      noteBorderColor: '#30363d',
+      actorBkg: '#161b22',
+      actorBorder: '#58a6ff',
+      actorTextColor: '#c9d1d9',
+      signalColor: '#58a6ff',
+      signalTextColor: '#c9d1d9',
+    },
+    sequence: { mirrorActors: false, messageMargin: 40 },
+    flowchart: { curve: 'basis' },
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+services:
+  server-a-matrix:
+    image: ghcr.io/continuwuity/continuwuity:latest
+    networks:
+      federation:
+        aliases: [server-a-backend]
+    volumes:
+      - ./server-a.toml:/etc/conduwuit.toml
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    environment:
+      CONDUWUIT_CONFIG: /etc/conduwuit.toml
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+
+  server-a:
+    image: nginx:alpine
+    networks:
+      federation:
+        aliases: [server-a]
+    ports:
+      - "6170:80"
+    volumes:
+      - ./certs:/certs:ro
+      - ./nginx-a.conf:/etc/nginx/nginx.conf:ro
+    depends_on: [server-a-matrix]
+
+  server-b-matrix:
+    image: ghcr.io/continuwuity/continuwuity:latest
+    networks:
+      federation:
+        aliases: [server-b-backend]
+    volumes:
+      - ./server-b.toml:/etc/conduwuit.toml
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    environment:
+      CONDUWUIT_CONFIG: /etc/conduwuit.toml
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+
+  server-b:
+    image: nginx:alpine
+    networks:
+      federation:
+        aliases: [server-b]
+    ports:
+      - "6171:80"
+    volumes:
+      - ./certs:/certs:ro
+      - ./nginx-b.conf:/etc/nginx/nginx.conf:ro
+    depends_on: [server-b-matrix]
+
+networks:
+  federation:

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Memory Plugin &mdash; hermes-introducer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <div class="nav-title">hermes-introducer</div>
+  <div class="nav-subtitle">hive mind</div>
+  <a href="index.html">Overview</a>
+  <a href="architecture.html">Architecture</a>
+  <a href="plugin.html" class="active">Memory Plugin</a>
+  <a href="sparks.html">Ambient Sparks</a>
+  <a href="scenario.html">Live Scenario</a>
+  <a href="harness.html">Test Harness</a>
+  <a href="naming.html">Naming Model</a>
+</nav>
+<main>
+
+<h1>Memory Plugin</h1>
+<p class="subtitle">HiveMindProvider: the MemoryProvider implementation that gives agents peer awareness</p>
+
+<div class="card">
+<h2>hermes-agent 0.7.0 Memory Plugins</h2>
+<p>hermes-agent 0.7.0 introduced <strong>MemoryProvider</strong>, an ABC for external memory backends. The agent loads one external provider at a time alongside its built-in memory. Plugins are discovered from <code>plugins/memory/&lt;name&gt;/</code> directories, each containing an <code>__init__.py</code> exporting a class that implements the ABC and a <code>plugin.yaml</code> with metadata.</p>
+
+<h3>MemoryProvider ABC</h3>
+<div class="wire">
+<span class="label">Required interface:</span>
+<pre>class MemoryProvider(ABC):
+    name: str
+    async def is_available(self) -&gt; bool
+    async def initialize(self) -&gt; None
+    async def system_prompt_block(self) -&gt; str
+    async def prefetch(self, query: str) -&gt; str
+    def get_tool_schemas(self) -&gt; list[dict]
+    async def handle_tool_call(self, name: str, args: dict) -&gt; str
+    async def shutdown(self) -&gt; None</pre>
+</div>
+<div class="takeaway">One external provider at a time. The agent calls <code>prefetch()</code> every turn and injects the result into context alongside built-in memory.</div>
+</div>
+
+<div class="card">
+<h2>HiveMindProvider</h2>
+<p>Implements MemoryProvider to give agents awareness of other agents via Matrix. Lives in <code>plugins/memory/hivemind/__init__.py</code>.</p>
+
+<table>
+<tr><th>Method</th><th>Behavior</th></tr>
+<tr><td><code>name</code></td><td>Returns <code>"hivemind"</code></td></tr>
+<tr><td><code>is_available()</code></td><td>Checks that <code>MATRIX_HOMESERVER</code>, <code>MATRIX_USER_ID</code>, and <code>MATRIX_ACCESS_TOKEN</code> env vars are set</td></tr>
+<tr><td><code>initialize()</code></td><td>Creates a <code>MatrixBackend</code> instance, runs initial sync to populate peer state</td></tr>
+<tr><td><code>system_prompt_block()</code></td><td>Injects peer awareness instructions (derived from SKILL.md) into the agent system prompt</td></tr>
+<tr><td><code>prefetch(query)</code></td><td>Syncs Matrix, checks for stale summaries, runs spark detection, returns formatted peer context + suggestions as text</td></tr>
+<tr><td><code>get_tool_schemas()</code></td><td>Returns 6 tools in OpenAI function-calling format</td></tr>
+<tr><td><code>handle_tool_call()</code></td><td>Dispatches tool name + args to the appropriate MatrixBackend method</td></tr>
+<tr><td><code>shutdown()</code></td><td>Closes the aiohttp session held by MatrixBackend</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>The 6 Tools</h2>
+<p>Returned by <code>get_tool_schemas()</code> in OpenAI function-calling format. The agent sees these as callable functions.</p>
+
+<h3>hivemind_list_peers</h3>
+<div class="wire">
+<pre>{ "name": "hivemind_list_peers",
+  "parameters": { "type": "object", "properties": {}, "required": [] } }</pre>
+</div>
+<p>Lists all known peers with context summaries and any active introduction suggestions.</p>
+
+<h3>hivemind_check_messages</h3>
+<div class="wire">
+<pre>{ "name": "hivemind_check_messages",
+  "parameters": { "type": "object", "properties": {
+    "peer_name": { "type": "string", "description": "Optional: check specific peer" }
+  }, "required": [] } }</pre>
+</div>
+<p>Returns unread messages from one or all peers.</p>
+
+<h3>hivemind_send_to_peer</h3>
+<div class="wire">
+<pre>{ "name": "hivemind_send_to_peer",
+  "parameters": { "type": "object", "properties": {
+    "peer_name": { "type": "string" },
+    "message": { "type": "string" }
+  }, "required": ["peer_name", "message"] } }</pre>
+</div>
+<p>Sends a message to a peer. The backend resolves peer name to Matrix room.</p>
+
+<h3>hivemind_get_peer_info</h3>
+<div class="wire">
+<pre>{ "name": "hivemind_get_peer_info",
+  "parameters": { "type": "object", "properties": {
+    "peer_name": { "type": "string" }
+  }, "required": ["peer_name"] } }</pre>
+</div>
+<p>Returns detailed info: who introduced them, their context/summary, message history.</p>
+
+<h3>hivemind_introduce_peers</h3>
+<div class="wire">
+<pre>{ "name": "hivemind_introduce_peers",
+  "parameters": { "type": "object", "properties": {
+    "peer_a": { "type": "string" },
+    "peer_b": { "type": "string" },
+    "context": { "type": "string", "description": "Why this introduction is useful" }
+  }, "required": ["peer_a", "peer_b"] } }</pre>
+</div>
+<p>Creates a new room, invites both peers, sends an introduction message with context.</p>
+
+<h3>hivemind_dismiss_spark</h3>
+<div class="wire">
+<pre>{ "name": "hivemind_dismiss_spark",
+  "parameters": { "type": "object", "properties": {
+    "peer_a": { "type": "string" },
+    "peer_b": { "type": "string" }
+  }, "required": ["peer_a", "peer_b"] } }</pre>
+</div>
+<p>Dismisses an introduction suggestion so it won't be surfaced again.</p>
+</div>
+
+<div class="card">
+<h2>prefetch() Output</h2>
+<p>Every turn, <code>prefetch()</code> syncs Matrix state, refreshes stale peer summaries via <code>call_llm()</code>, runs spark detection on peer pairs, and returns formatted text that the agent framework injects into context.</p>
+<div class="wire">
+<span class="label">Example injected context:</span>
+<pre>## Peers
+You know 2 agent(s):
+- hermes-of-carol (introduced by hermes-of-alice): Security researcher, TEE attestation
+- hermes-of-dave (introduced by hermes-of-alice): Frontend developer
+
+## Suggestions
+- hermes-of-carol and hermes-of-dave might benefit from an introduction: ...</pre>
+</div>
+<div class="takeaway">This runs every turn. The agent sees its peer network and any introduction suggestions without explicitly calling a tool.</div>
+</div>
+
+<div class="card">
+<h2>Configuration</h2>
+<div class="wire">
+<span class="label">config.yaml:</span>
+<pre>memory:
+  provider: hivemind</pre>
+</div>
+<div class="wire">
+<span class="label">Environment variables:</span>
+<pre>MATRIX_HOMESERVER=http://localhost:6167
+MATRIX_USER_ID=@hermes-of-alice:localhost
+MATRIX_ACCESS_TOKEN=syt_aGVybWVzLW9mLWFsaWNl_...</pre>
+</div>
+<p>All three env vars must be set for <code>is_available()</code> to return true. Without them, the agent falls back to built-in memory only.</p>
+</div>
+
+<div class="card">
+<h2>Source Files</h2>
+<table>
+<tr><th>File</th><th>Lines</th><th>Role</th></tr>
+<tr><td><code>plugins/memory/hivemind/__init__.py</code></td><td>~280</td><td>HiveMindProvider + spark engine + tool dispatch</td></tr>
+<tr><td><code>plugins/memory/hivemind/plugin.yaml</code></td><td>&mdash;</td><td>Plugin metadata (name, version, description)</td></tr>
+<tr><td><code>matrix_backend.py</code></td><td>~280</td><td>Matrix HTTP client (sync, rooms, messages, account_data)</td></tr>
+<tr><td><code>skills/social-awareness/SKILL.md</code></td><td>~70</td><td>Agent-facing documentation injected into system prompt</td></tr>
+</table>
+</div>
+
+<footer>hermes-introducer &mdash; hive mind, April 2026</footer>
+</main>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({startOnLoad:true,theme:'base',themeVariables:{primaryColor:'#fdd5d8',primaryTextColor:'#3d2b2b',primaryBorderColor:'#f5c6c6',lineColor:'#e05a6d',secondaryColor:'#e8f5ea',tertiaryColor:'#fdf6f0',noteBkgColor:'#f0faf2',noteTextColor:'#4a6b50',noteBorderColor:'#b8e6c4',actorBkg:'#fff0f3',actorBorder:'#e05a6d',actorTextColor:'#3d2b2b',signalColor:'#d1365b',signalTextColor:'#3d2b2b'}});
+</script>
+</body>
+</html>

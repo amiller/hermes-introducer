@@ -1,0 +1,4 @@
+matrix-nio
+pytest
+pytest-asyncio
+fastmcp

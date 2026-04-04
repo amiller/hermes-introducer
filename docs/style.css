@@ -1,0 +1,55 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #fdf6f0; color: #3d2b2b; }
+nav { position: fixed; top: 0; left: 0; width: 220px; height: 100vh; background: #fff0f0; border-right: 1px solid #f5c6c6; padding: 1.5rem 1rem; display: flex; flex-direction: column; gap: 0.3rem; z-index: 10; }
+nav .nav-title { color: #e05a6d; font-weight: bold; font-size: 0.9rem; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #f5c6c6; }
+nav .nav-subtitle { color: #8a6b6b; font-size: 0.7rem; margin-top: -0.8rem; margin-bottom: 1rem; }
+nav a { color: #8a6b6b; text-decoration: none; padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.85rem; }
+nav a:hover { background: #fce8e8; color: #3d2b2b; }
+nav a.active { background: #fdd5d8; color: #d1365b; }
+main { margin-left: 220px; max-width: 900px; padding: 2rem 3rem; }
+h1 { color: #d1365b; font-size: 1.8rem; margin-bottom: 0.3rem; }
+h2 { color: #e05a6d; margin: 1.5rem 0 0.75rem 0; font-size: 1.2rem; }
+h3 { color: #5aaa6e; margin: 1.2rem 0 0.5rem 0; font-size: 1rem; }
+.subtitle { color: #8a6b6b; margin-bottom: 2rem; font-size: 0.9rem; }
+.card { background: #fff7f7; border: 1px solid #f5c6c6; border-radius: 12px; padding: 1.5rem; margin: 1.5rem 0; box-shadow: 0 2px 8px rgba(209,54,91,0.06); }
+.card p { color: #6b4a4a; font-size: 0.9rem; margin: 0.5rem 0; line-height: 1.5; }
+table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; }
+th, td { border: 1px solid #f5c6c6; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
+th { background: #fce8e8; color: #d1365b; }
+td { color: #3d2b2b; }
+td.good { color: #3a9a5b; font-weight: bold; }
+td.bad { color: #d1365b; }
+td.warn { color: #c48a2a; }
+.note { color: #8a6b6b; font-size: 0.8rem; font-style: italic; margin-top: 0.5rem; }
+.wire { background: #f0faf2; border: 1px solid #b8e6c4; border-radius: 8px; padding: 1rem; margin: 0.75rem 0; font-size: 0.8rem; overflow-x: auto; }
+.wire pre { margin: 0; color: #2d7a42; white-space: pre-wrap; }
+.wire .label { color: #d1365b; font-weight: bold; display: block; margin-bottom: 0.4rem; }
+.takeaway { background: #f0faf2; border-left: 3px solid #5aaa6e; padding: 0.6rem 1rem; margin: 0.75rem 0; font-size: 0.85rem; color: #4a6b50; line-height: 1.5; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+.finding { background: #fff0f3; border: 1px solid #f5c6c6; border-radius: 12px; padding: 1rem; text-align: center; }
+.finding-num { color: #d1365b; font-size: 2rem; font-weight: bold; }
+.finding-label { color: #8a6b6b; font-size: 0.8rem; margin-top: 0.3rem; }
+.toc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin: 1rem 0; }
+.toc-item { background: #fff7f7; border: 1px solid #f5c6c6; border-radius: 12px; padding: 1rem; text-decoration: none; display: block; transition: border-color 0.2s, box-shadow 0.2s; }
+.toc-item:hover { border-color: #e05a6d; box-shadow: 0 2px 12px rgba(209,54,91,0.1); }
+.toc-item strong { color: #d1365b; display: block; margin-bottom: 0.3rem; }
+.toc-item span { color: #8a6b6b; font-size: 0.8rem; line-height: 1.4; }
+.tag { display: inline-block; font-size: 0.7rem; padding: 2px 8px; border-radius: 12px; margin-right: 4px; }
+.tag-arch { background: #c4a8e8; color: #3d2050; }
+.tag-trust { background: #a8d4e8; color: #1e4a5e; }
+.tag-edge { background: #f5dca8; color: #5e4a1e; }
+.tag-good { background: #a8e8b8; color: #1e5e2a; }
+.tag-bad { background: #f5a8b0; color: #5e1e24; }
+.tag-scenario { background: #d4a0c0; color: #3d2050; }
+code { background: #fce8e8; padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.85em; color: #d1365b; }
+.mermaid { background: #fdf6f0; }
+footer { color: #c4a8a8; text-align: center; margin-top: 3rem; padding: 1rem; font-size: 0.75rem; border-top: 1px solid #f5c6c6; }
+a { color: #d1365b; }
+.agent-name { color: #5aaa6e; font-weight: bold; }
+.human-name { color: #d1365b; font-weight: bold; }
+.transcript { background: #fff7f7; border: 1px solid #f5c6c6; border-radius: 8px; padding: 1rem; margin: 0.75rem 0; font-size: 0.85rem; }
+.transcript .turn { margin: 0.5rem 0; padding: 0.5rem; border-radius: 6px; }
+.transcript .turn-human { background: #fce8e8; }
+.transcript .turn-agent { background: #f0faf2; }
+.transcript .turn-label { font-weight: bold; font-size: 0.75rem; margin-bottom: 0.3rem; }

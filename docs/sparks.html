@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ambient Sparks &mdash; hermes-introducer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <div class="nav-title">hermes-introducer</div>
+  <div class="nav-subtitle">hive mind</div>
+  <a href="index.html">Overview</a>
+  <a href="architecture.html">Architecture</a>
+  <a href="plugin.html">Memory Plugin</a>
+  <a href="sparks.html" class="active">Ambient Sparks</a>
+  <a href="scenario.html">Live Scenario</a>
+  <a href="harness.html">Test Harness</a>
+  <a href="naming.html">Naming Model</a>
+</nav>
+<main>
+
+<h1>Ambient Introduction Sparks</h1>
+<p class="subtitle">The system notices who should meet &mdash; without anyone asking</p>
+
+<div class="card">
+<h2>Why Ambient?</h2>
+<p>Introductions are most valuable when they're <strong>timely</strong> &mdash; when the need is fresh. An agent that knows Bob needs a security audit and Carol offers audit services shouldn't wait for someone to connect the dots. The system should surface that connection as soon as it has the information.</p>
+<div class="transcript">
+<div class="turn turn-agent">
+<div class="turn-label">hermes-of-alice &rarr; Alice</div>
+I notice Bob needs a security audit and Carol offers audit services. Should I introduce them?
+</div>
+<div class="turn turn-human">
+<div class="turn-label">Alice &rarr; hermes-of-alice</div>
+Yes, go ahead.
+</div>
+</div>
+<div class="takeaway">The agent's social graph grows organically based on what peers actually need. Introductions are <strong>emergent</strong> &mdash; the system summarizes each peer's needs and offers, detects complementary pairs, and surfaces suggestions without anyone asking.</div>
+</div>
+
+<div class="card">
+<h2>Design Lineage</h2>
+<p>Two patterns inform this design:</p>
+<table>
+<tr><th>Pattern</th><th>Source</th><th>Applied here as</th></tr>
+<tr><td><strong>Interjector</strong></td><td>Teleport Hermes Notebook &mdash; watches group chat, proactively surfaces relevant notebook entries when conversation aligns</td><td>Watch peer context, proactively surface introduction opportunities when needs/offers align</td></tr>
+<tr><td><strong>Dialectic</strong></td><td>Honcho &mdash; background summarizer continuously extracts patterns from conversations, stores conclusions</td><td>Summarize each peer's needs, offers, and expertise from messages + introduction context</td></tr>
+</table>
+<p>Both are forms of <strong>ambient intelligence</strong>: surfacing connections without explicit queries. The interjector connects information to conversations. Sparks connect people to people.</p>
+</div>
+
+<div class="card">
+<h2>How It Works</h2>
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Agent turn starts
+    participant P as HiveMindProvider
+    participant L as LLM (auxiliary_client)
+    participant X as Matrix account_data
+
+    A->>P: prefetch()
+    P->>P: Sync + fetch peers
+
+    Note over P: Check for stale summaries
+    P->>X: Load social.awareness.summary for each peer
+    P->>P: Stale if no summary or 5+ new messages
+
+    alt Stale peers found (max 2 per call)
+        P->>L: call_llm() &mdash; "Summarize this peer's needs/offers"
+        L-->>P: PeerSummary {needs, offers, expertise}
+        P->>X: Store updated summary
+    end
+
+    alt Summaries updated & 2+ peers
+        P->>L: call_llm() per pair &mdash; "Should these peers be introduced?"
+        L-->>P: SparkEvaluation {should_introduce, reason, confidence}
+        P->>X: Store new sparks (deduplicated)
+    end
+
+    P->>X: Load pending sparks
+    P-->>A: Tools ready (hivemind_list_peers includes suggestions)
+</pre>
+<div class="takeaway"><strong>No background threads.</strong> Summarization and spark detection run on <code>prefetch()</code> every turn. The plugin syncs, checks for stale summaries, and evaluates pairs before the agent's tools are called.</div>
+</div>
+
+<div class="card">
+<h2>LLM Inference via auxiliary_client</h2>
+<p>The plugin calls hermes's <code>auxiliary_client.call_llm()</code> directly to run LLM inference for summarization and spark detection.</p>
+<pre class="mermaid">
+graph LR
+    subgraph "Memory Plugin (HiveMindProvider)"
+        PRE["prefetch()"]
+        SUM["_summarize_peer()"]
+        DET["_detect_sparks()"]
+        PRE --> SUM --> DET
+    end
+    subgraph "hermes-agent"
+        LLM["auxiliary_client.call_llm()<br/>(any configured model)"]
+    end
+
+    SUM -->|"call_llm()<br/>result_type=PeerSummary"| LLM
+    DET -->|"call_llm()<br/>result_type=SparkEvaluation"| LLM
+    LLM -->|"structured output"| SUM
+    LLM -->|"structured output"| DET
+
+    style PRE fill:#5aaa6e,color:#2d4a35
+    style LLM fill:#d4a0c0,color:#3d2050
+</pre>
+<p>The plugin doesn't need its own LLM credentials. It calls <code>call_llm()</code> via hermes's auxiliary_client, which can use a cheap model (haiku-class) for summarization while the main agent uses a more capable model for conversation.</p>
+</div>
+
+<div class="card">
+<h2>Storage: Two New account_data Keys</h2>
+<div class="grid-2">
+<div>
+<h3>Per-Room Summary</h3>
+<div class="wire">
+<span class="label">social.awareness.summary:</span>
+<pre>{
+  "peer_name": "hermes-of-carol",
+  "needs": [
+    "security audit for DeFi protocol",
+    "formal verification expertise"
+  ],
+  "offers": [
+    "TEE attestation knowledge",
+    "Rust development",
+    "smart contract auditing"
+  ],
+  "expertise": [
+    "reentrancy attacks",
+    "oracle manipulation"
+  ],
+  "summary_text": "Carol is a security
+    researcher who specializes in...",
+  "last_updated": "2026-04-03T...",
+  "message_count_at_update": 15
+}</pre>
+</div>
+</div>
+<div>
+<h3>Global Sparks</h3>
+<div class="wire">
+<span class="label">social.awareness.sparks:</span>
+<pre>{
+  "sparks": [
+    {
+      "id": "a1b2c3d4",
+      "peer_a": "hermes-of-bob",
+      "peer_b": "hermes-of-carol",
+      "reason": "Bob needs a security
+        audit; Carol offers auditing",
+      "confidence": "high",
+      "created_at": "2026-04-03T...",
+      "status": "pending"
+    }
+  ]
+}</pre>
+</div>
+</div>
+</div>
+<table>
+<tr><th>Key</th><th>Scope</th><th>Updated when</th></tr>
+<tr><td><code>social.awareness.peer</code></td><td>Room</td><td>On first discovery (existing)</td></tr>
+<tr><td><code>social.awareness.summary</code></td><td>Room</td><td>When 5+ new messages since last summary</td></tr>
+<tr><td><code>social.awareness.sparks</code></td><td>User (global)</td><td>When summaries update and pairs evaluated</td></tr>
+</table>
+<div class="takeaway">All state lives in Matrix. The plugin is stateless. Crash and restart? One <code>/sync</code> rebuilds the peer cache; summaries and sparks persist in account_data.</div>
+</div>
+
+<div class="card">
+<h2>The Summarization Prompt</h2>
+<p>Uses structured output via <code>call_llm(result_type=PeerSummary)</code>:</p>
+<div class="wire">
+<span class="label">System prompt:</span>
+<pre>Analyze this peer based on their introduction
+context and messages. Extract what they NEED
+(problems, requests, gaps), what they OFFER
+(skills, services, knowledge), and their
+EXPERTISE areas. Be specific and concise.
+2-4 items per category.</pre>
+</div>
+<div class="wire">
+<span class="label">User message (constructed from peer data):</span>
+<pre>Peer: hermes-of-carol
+Introduction context: Carol specializes in TEE
+attestation and security audits
+
+Recent messages:
+hermes-of-carol: Hi — happy to help with Meridian...
+hermes-of-bob: Can you review the liquidation engine?
+hermes-of-carol: Yes, I'd quote $15-25K for a 2-week...</pre>
+</div>
+</div>
+
+<div class="card">
+<h2>The Spark Detection Prompt</h2>
+<p>Evaluates each peer pair via <code>call_llm(result_type=SparkEvaluation)</code>:</p>
+<div class="wire">
+<span class="label">System prompt:</span>
+<pre>Evaluate whether two peers should be introduced.
+An introduction is warranted when one peer's NEEDS
+match another peer's OFFERS, or they have
+complementary expertise. Be conservative — only
+suggest introductions with clear mutual benefit.</pre>
+</div>
+<div class="wire">
+<span class="label">User message (per pair):</span>
+<pre>Peer A — hermes-of-bob:
+  Needs: security audit for DeFi protocol
+  Offers: Rust development, DeFi expertise
+
+Peer B — hermes-of-carol:
+  Needs: clients with DeFi protocols
+  Offers: smart contract auditing, TEE attestation</pre>
+</div>
+<p>Only sparks with <strong>high</strong> or <strong>medium</strong> confidence are stored. Low-confidence matches are discarded.</p>
+</div>
+
+<div class="card">
+<h2>Spark Lifecycle</h2>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> pending: Spark detected
+    pending --> executed: introduce_peers()
+    pending --> dismissed: dismiss_spark()
+    executed --> [*]
+    dismissed --> [*]
+</pre>
+<table>
+<tr><th>Status</th><th>Meaning</th><th>Shown in suggestions?</th></tr>
+<tr><td><code>pending</code></td><td>Detected but not acted on</td><td class="good">Yes</td></tr>
+<tr><td><code>executed</code></td><td>Introduction created</td><td class="bad">No</td></tr>
+<tr><td><code>dismissed</code></td><td>User/agent decided not to introduce</td><td class="bad">No</td></tr>
+</table>
+<p>Sparks are deduplicated by peer pair (sorted). The same pair will never generate a second spark regardless of how many times summaries update.</p>
+</div>
+
+<div class="card">
+<h2>What the Agent Sees</h2>
+<p>When <code>list_peers()</code> returns, it now includes a <code>suggestions</code> field:</p>
+<div class="wire">
+<span class="label">list_peers() return value:</span>
+<pre>{
+  "peers": [
+    {"name": "hermes-of-bob", "context": "...", ...},
+    {"name": "hermes-of-carol", "context": "...", ...},
+    {"name": "hermes-of-dave", "context": "...", ...}
+  ],
+  "suggestions": [
+    {
+      "peer_a": "hermes-of-carol",
+      "peer_b": "hermes-of-dave",
+      "reason": "Carol needs a frontend developer;
+        Dave builds frontend UIs",
+      "confidence": "high"
+    }
+  ]
+}</pre>
+</div>
+<p>The SKILL.md instructs the agent to mention suggestions naturally and confirm with the user before acting:</p>
+<div class="transcript">
+<div class="turn turn-agent">
+<div class="turn-label">hermes-of-alice &rarr; Alice</div>
+I notice Carol and Dave might benefit from an introduction &mdash; Carol needs a frontend developer for her audit dashboard, and Dave builds frontend UIs. Should I connect them?
+</div>
+<div class="turn turn-human">
+<div class="turn-label">Alice &rarr; hermes-of-alice</div>
+Yes, go ahead.
+</div>
+<div class="turn turn-agent">
+<div class="turn-label">hermes-of-alice</div>
+<em>Calls <code>introduce_peers(peer_a="hermes-of-carol", peer_b="hermes-of-dave", reason="...")</code></em><br><br>
+Done &mdash; I've introduced Carol's agent to Dave's agent with context about each.
+</div>
+</div>
+</div>
+
+<div class="card">
+<h2>Cost Analysis</h2>
+<table>
+<tr><th>Operation</th><th>Sampling calls</th><th>Tokens (est.)</th><th>When</th></tr>
+<tr><td>Summarize 1 peer</td><td>1</td><td>~400</td><td>When 5+ new messages</td></tr>
+<tr><td>Evaluate 1 pair</td><td>1</td><td>~200</td><td>When any summary updates</td></tr>
+<tr><td>N peers, all stale</td><td>min(N,2) + C(N,2)</td><td>~1000-3000</td><td>Max 2 summaries per call</td></tr>
+</table>
+<p>With 5 peers and all summaries stale: 2 summarize calls + up to 10 pair evaluations = 12 sampling calls, ~3000 tokens. Using a haiku-class model, this costs fractions of a cent and adds ~2-3 seconds latency.</p>
+<div class="takeaway">The staleness threshold (5+ messages) and per-call cap (max 2 summaries) keep costs bounded. Most <code>list_peers()</code> calls return instantly with cached summaries and stored sparks.</div>
+</div>
+
+<div class="card">
+<h2>Design Principles</h2>
+<div class="grid-2">
+<div>
+<h3>No background threads</h3>
+<p>Summarization runs on <code>prefetch()</code> every turn. No polling loops, no timers, no daemon threads. The system syncs and summarizes once at the start of each turn.</p>
+</div>
+<div>
+<h3>No external dependencies</h3>
+<p>No Redis, no database, no honcho. Matrix account_data is the only storage. The plugin is stateless between restarts.</p>
+</div>
+<div>
+<h3>Borrowed inference</h3>
+<p>The plugin doesn't need LLM credentials. It calls <code>call_llm()</code> via hermes's auxiliary_client. This means the summarizer can use whatever model hermes is configured with.</p>
+</div>
+<div>
+<h3>Conservative suggestions</h3>
+<p>Only high/medium confidence sparks are stored. The agent confirms with the user before acting. The system errs on the side of silence.</p>
+</div>
+</div>
+</div>
+
+<div class="card">
+<h2>Test Coverage</h2>
+<p>9 tests in <code>test_sparks.py</code> covering the full spark pipeline:</p>
+<table>
+<tr><th>#</th><th>Test</th><th>What it proves</th></tr>
+<tr><td>1</td><td>test_summarize_peer_shape</td><td>call_llm() returns PeerSummary, correct fields</td></tr>
+<tr><td>2</td><td>test_spark_detection_complementary</td><td>Matching needs/offers &rarr; spark generated</td></tr>
+<tr><td>3</td><td>test_spark_detection_no_match</td><td>Unrelated peers &rarr; no spark</td></tr>
+<tr><td>4</td><td>test_spark_detection_low_confidence_filtered</td><td>Low confidence &rarr; filtered out</td></tr>
+<tr><td>5</td><td>test_staleness_triggers_summarization</td><td>Missing summary triggers call_llm() and stores result</td></tr>
+<tr><td>6</td><td>test_sparks_stored_in_global_account_data</td><td>Sparks written to user-level account_data</td></tr>
+<tr><td>7</td><td>test_sparks_deduplicated</td><td>Same pair generates only one spark</td></tr>
+<tr><td>8</td><td>test_dismiss_spark</td><td>Dismissed sparks don't appear in suggestions</td></tr>
+<tr><td>9</td><td>test_executed_spark_status</td><td>Executed sparks tracked correctly</td></tr>
+</table>
+<p>Tests 1-4 use mocked <code>call_llm()</code> (no LLM needed). Tests 5-9 run against live Conduit with mocked call_llm.</p>
+</div>
+
+<footer>hermes-introducer &mdash; hive mind, April 2026</footer>
+</main>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({startOnLoad:true,theme:'base',themeVariables:{primaryColor:'#fdd5d8',primaryTextColor:'#3d2b2b',primaryBorderColor:'#f5c6c6',lineColor:'#e05a6d',secondaryColor:'#e8f5ea',tertiaryColor:'#fdf6f0',noteBkgColor:'#f0faf2',noteTextColor:'#4a6b50',noteBorderColor:'#b8e6c4',actorBkg:'#fff0f3',actorBorder:'#e05a6d',actorTextColor:'#3d2b2b',signalColor:'#d1365b',signalTextColor:'#3d2b2b'},sequence:{mirrorActors:false,messageMargin:40},state:{padding:10}});
+</script>
+</body>
+</html>

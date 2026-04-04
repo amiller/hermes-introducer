@@ -1,0 +1,4 @@
+name: hivemind
+description: Peer awareness and ambient introductions via Matrix
+version: "0.1.0"
+author: amiller

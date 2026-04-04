@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Test Harness &mdash; hermes-introducer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <div class="nav-title">hermes-introducer</div>
+  <div class="nav-subtitle">hive mind</div>
+  <a href="index.html">Overview</a>
+  <a href="architecture.html">Architecture</a>
+  <a href="plugin.html">Memory Plugin</a>
+  <a href="sparks.html">Ambient Sparks</a>
+  <a href="scenario.html">Live Scenario</a>
+  <a href="harness.html" class="active">Test Harness</a>
+  <a href="naming.html">Naming Model</a>
+</nav>
+<main>
+
+<h1>Test Harness</h1>
+<p class="subtitle">Two testing layers: fast integration tests (50 tests) + live agent tests</p>
+
+<div class="card">
+<h2>Testing Architecture</h2>
+<pre class="mermaid">
+graph LR
+    subgraph "Layer 1: Integration Tests (no LLM)"
+        T["pytest<br/>4 test files, 50 tests<br/>~8 seconds"]
+        T --> MB["MatrixBackend<br/>(tested directly)"]
+        MB --> C1["Conduit :6167"]
+    end
+
+    subgraph "Layer 2: Live Agent Tests (with LLM)"
+        H1["hermes-of-bob<br/>container"]
+        H2["hermes-of-carol<br/>container"]
+        H1 --> MP1["Memory Plugin"]
+        H2 --> MP2["Memory Plugin"]
+        MP1 --> C2["Conduit :6167"]
+        MP2 --> C2
+        H1 -.->|GLM-4.7| ZAI["ZAI API"]
+        H2 -.->|GLM-4.7| ZAI
+    end
+
+    style T fill:#5aaa6e,color:#2d4a35
+    style H1 fill:#d4a0c0,color:#3d2050
+    style H2 fill:#d4a0c0,color:#3d2050
+    style C1 fill:#fdd5d8,color:#3d2b2b
+    style C2 fill:#fdd5d8,color:#3d2b2b
+</pre>
+</div>
+
+<div class="card">
+<h2>Layer 1: Integration Tests</h2>
+<p><code>test_social_awareness.py</code> &mdash; 13 tests against live Conduit, no LLM needed.</p>
+<table>
+<tr><th>#</th><th>Test</th><th>What it proves</th></tr>
+<tr><td>1</td><td>test_auto_join_and_discover_peer</td><td>Sync detects invite, auto-joins, extracts peer</td></tr>
+<tr><td>2</td><td>test_peer_context_extracted</td><td>"About @peer: ..." message parsed into context field</td></tr>
+<tr><td>3</td><td>test_introduced_by_is_alice</td><td>Room creator recorded as introducer</td></tr>
+<tr><td>4</td><td>test_peer_id_format</td><td>No @ prefix or : separator in peer ID</td></tr>
+<tr><td>5</td><td>test_check_messages_from_peer</td><td>Messages readable via peer name lookup</td></tr>
+<tr><td>6</td><td>test_no_matrix_ids_in_messages</td><td>Message "from" uses names, not Matrix IDs</td></tr>
+<tr><td>7</td><td>test_multiple_introductions</td><td>Two intros = two separate peers</td></tr>
+<tr><td>8</td><td>test_get_peer_info</td><td>Full peer details returned</td></tr>
+<tr><td>9</td><td>test_send_to_peer</td><td>Bob sends message, Carol sees it</td></tr>
+<tr><td>10</td><td>test_introduce_peers_creates_room</td><td>Bob introduces Carol&harr;Dave, room created with both invited</td></tr>
+<tr><td>11</td><td>test_introduce_peers_posts_context</td><td>"About" messages posted in the new introduction room</td></tr>
+<tr><td>12</td><td>test_global_account_data</td><td>User-level account_data round-trips correctly</td></tr>
+<tr><td>13</td><td>test_bidirectional_conversation</td><td>Multiple messages in both directions</td></tr>
+</table>
+
+<p><code>test_sparks.py</code> &mdash; 9 tests with mocked <code>call_llm()</code>, against live Conduit.</p>
+<table>
+<tr><th>#</th><th>Test</th><th>What it proves</th></tr>
+<tr><td>1</td><td>test_summarize_peer_shape</td><td>call_llm() returns PeerSummary with correct fields</td></tr>
+<tr><td>2</td><td>test_spark_detection_complementary</td><td>Matching needs/offers generates a spark</td></tr>
+<tr><td>3</td><td>test_spark_detection_no_match</td><td>Unrelated peers generate no spark</td></tr>
+<tr><td>4</td><td>test_spark_detection_low_confidence_filtered</td><td>Low confidence sparks filtered out</td></tr>
+<tr><td>5</td><td>test_staleness_triggers_summarization</td><td>Missing summary triggers call_llm() and stores result</td></tr>
+<tr><td>6</td><td>test_sparks_stored_in_global_account_data</td><td>Sparks written to user-level account_data</td></tr>
+<tr><td>7</td><td>test_sparks_deduplicated</td><td>Same peer pair only generates one spark</td></tr>
+<tr><td>8</td><td>test_dismiss_spark</td><td>Dismissed sparks don't appear in suggestions</td></tr>
+<tr><td>9</td><td>test_executed_spark_status</td><td>Executed sparks tracked correctly</td></tr>
+</table>
+
+<p><code>test_hivemind_plugin.py</code> &mdash; 14 tests verifying the HiveMindProvider plugin interface.</p>
+<table>
+<tr><th>#</th><th>Test</th><th>What it proves</th></tr>
+<tr><td>1</td><td>test_plugin_loads</td><td>HiveMindProvider instantiates and registers tools</td></tr>
+<tr><td>2</td><td>test_prefetch_syncs</td><td>prefetch() triggers /sync and populates peer cache</td></tr>
+<tr><td>3</td><td>test_hivemind_list_peers</td><td>hivemind_list_peers returns discovered peers</td></tr>
+<tr><td>4</td><td>test_hivemind_check_messages</td><td>hivemind_check_messages returns messages from peer</td></tr>
+<tr><td>5</td><td>test_hivemind_send_to_peer</td><td>hivemind_send_to_peer delivers message via Matrix</td></tr>
+<tr><td>6</td><td>test_hivemind_get_peer_info</td><td>hivemind_get_peer_info returns full peer details</td></tr>
+<tr><td>7</td><td>test_hivemind_introduce_peers</td><td>hivemind_introduce_peers creates room with both invited</td></tr>
+<tr><td>8</td><td>test_hivemind_dismiss_spark</td><td>hivemind_dismiss_spark marks spark as dismissed</td></tr>
+<tr><td>9</td><td>test_prefetch_summarizes_stale</td><td>prefetch() calls call_llm() for stale peer summaries</td></tr>
+<tr><td>10</td><td>test_prefetch_detects_sparks</td><td>prefetch() evaluates peer pairs for introduction sparks</td></tr>
+<tr><td>11</td><td>test_tools_registered</td><td>All 6 hivemind_* tools appear in provider.tools()</td></tr>
+<tr><td>12</td><td>test_plugin_yaml_valid</td><td>plugin.yaml loads and declares correct provider</td></tr>
+<tr><td>13</td><td>test_no_matrix_ids_exposed</td><td>Tool outputs use peer names, not @user:server IDs</td></tr>
+<tr><td>14</td><td>test_prefetch_idempotent</td><td>Multiple prefetch() calls don't duplicate peers</td></tr>
+</table>
+
+<div class="wire">
+<span class="label">Run:</span>
+<pre>docker compose up conduit -d
+python3 setup_users.py
+pytest test_introducer.py test_social_awareness.py test_sparks.py test_hivemind_plugin.py -v
+
+# 50 passed in ~8s</pre>
+</div>
+<div class="takeaway">These tests verify the <strong>Matrix backend abstraction</strong>, <strong>ambient spark pipeline</strong>, and <strong>memory plugin interface</strong> without any LLM involvement. Spark and plugin tests mock <code>call_llm()</code> to test summarization, detection, deduplication, and lifecycle without needing a real model. Tests need hermes-agent on PYTHONPATH to import the MemoryProvider base class.</div>
+</div>
+
+<div class="card">
+<h2>Layer 2: Live Agent Tests</h2>
+<p>Full hermes-agent containers with GLM-4.7 (via ZAI) using the memory plugin against Conduit.</p>
+
+<h3>Container Architecture</h3>
+<pre class="mermaid">
+graph TB
+    subgraph "docker-compose.agent-test.yml"
+        subgraph "Conduit"
+            S["matrixconduit/matrix-conduit<br/>Port 6167<br/>114 MB RAM"]
+        end
+        subgraph "hermes-of-bob"
+            HB["hermes-agent (python:3.11-slim)<br/>+ hivemind plugin<br/>+ matrix_backend.py"]
+            MPB["Memory Plugin<br/>(loaded by hermes)"]
+            HB --> MPB
+        end
+        subgraph "hermes-of-carol"
+            HC["hermes-agent (python:3.11-slim)<br/>+ hivemind plugin<br/>+ matrix_backend.py"]
+            MPC["Memory Plugin<br/>(loaded by hermes)"]
+            HC --> MPC
+        end
+        MPB -->|"HTTP"| S
+        MPC -->|"HTTP"| S
+    end
+
+    ZAI["ZAI API<br/>GLM-4.7"]
+    HB -.->|"HTTPS"| ZAI
+    HC -.->|"HTTPS"| ZAI
+
+    style S fill:#fdd5d8,color:#3d2b2b
+    style HB fill:#d4a0c0,color:#3d2050
+    style HC fill:#d4a0c0,color:#3d2050
+</pre>
+
+<h3>Image</h3>
+<table>
+<tr><th>Component</th><th>Base</th><th>Size</th></tr>
+<tr><td>Agent image</td><td><code>python:3.11-slim</code> + hermes-agent + aiohttp</td><td>~1 GB</td></tr>
+<tr><td>Conduit</td><td><code>matrixconduit/matrix-conduit</code></td><td>~150 MB</td></tr>
+</table>
+<p class="note">Agent image is large due to hermes-agent <code>[all]</code> extras. Could be trimmed to ~400 MB with <code>[core]</code>.</p>
+
+<h3>Setup Flow</h3>
+<div class="wire">
+<span class="label">Complete setup from scratch:</span>
+<pre># 1. Build agent images
+docker compose -f docker-compose.agent-test.yml build
+
+# 2. Start Matrix server
+docker compose -f docker-compose.agent-test.yml up conduit -d
+
+# 3. Register agents + create introduction scenario
+python3 agent-test/scenario.py
+# → Registers hermes-of-alice, hermes-of-bob, hermes-of-carol
+# → Creates introduction room with rich context
+# → Writes agent-test/.env.agents with credentials
+
+# 4. Start agent containers
+docker compose -f docker-compose.agent-test.yml \
+  --env-file agent-test/.env.agents up hermes-of-bob hermes-of-carol -d
+
+# 5. Verify memory plugin
+docker exec hermes-introducer-hermes-of-bob-1 hermes memory test
+# → ✓ hivemind provider loaded, 6 tools discovered
+
+# 6. Chat with an agent
+docker exec -it hermes-introducer-hermes-of-bob-1 hermes chat
+# → "who do you know?" → calls list_peers → "I know hermes-of-carol..."</pre>
+</div>
+</div>
+
+<div class="card">
+<h2>What Each Container Gets</h2>
+<p>Each agent container is identical except for Matrix credentials:</p>
+<div class="wire">
+<span class="label">Dockerfile (agent-test/Dockerfile):</span>
+<pre>FROM python:3.11-slim
+RUN pip install hermes-agent[all] aiohttp matrix-nio
+
+# Plugin files copied into hermes plugins dir
+COPY plugins/memory/hivemind/     → /opt/hermes-agent/plugins/memory/hivemind/
+COPY matrix_backend.py            → /opt/hermes-agent/plugins/memory/hivemind/
+COPY introducer.py                → /opt/hermes-agent/plugins/memory/hivemind/
+COPY skills/                      → /opt/hermes-agent/skills/introducer/</pre>
+</div>
+<div class="wire">
+<span class="label">Entrypoint (agent-test/agent-entrypoint.sh):</span>
+<pre>1. Bootstrap $HERMES_HOME (skills, config, SOUL.md)
+2. Inject GLM_API_KEY into hermes .env
+3. Patch config.yaml:
+   - model: zai/glm-4.7
+   - memory:
+       provider: hivemind
+       env: MATRIX_HOMESERVER, MATRIX_USER_ID, MATRIX_ACCESS_TOKEN
+4. exec sleep infinity (ready for `hermes chat`)</pre>
+</div>
+</div>
+
+<div class="card">
+<h2>Environment Variables</h2>
+<table>
+<tr><th>Variable</th><th>Source</th><th>Purpose</th></tr>
+<tr><td><code>HERMES_MODEL</code></td><td>docker-compose</td><td><code>zai/glm-4.7</code></td></tr>
+<tr><td><code>GLM_API_KEY</code></td><td>.env.agents</td><td>ZAI API authentication</td></tr>
+<tr><td><code>GLM_BASE_URL</code></td><td>docker-compose</td><td><code>https://api.z.ai/api/coding/paas/v4</code></td></tr>
+<tr><td><code>MATRIX_HOMESERVER</code></td><td>docker-compose</td><td><code>http://conduit:6167</code> (internal Docker DNS)</td></tr>
+<tr><td><code>MATRIX_USER_ID</code></td><td>.env.agents</td><td>Per-agent: <code>@hermes-of-bob:localhost</code></td></tr>
+<tr><td><code>MATRIX_ACCESS_TOKEN</code></td><td>.env.agents</td><td>Per-agent: generated by scenario.py</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>Test Coverage Summary</h2>
+<table>
+<tr><th>Layer</th><th>Tests</th><th>What's tested</th><th>LLM needed?</th></tr>
+<tr><td>Matrix protocol</td><td>14 (test_introducer.py)</td><td>Room lifecycle, membership, messaging, kicks, bans</td><td class="good">No</td></tr>
+<tr><td>Peer abstraction</td><td>13 (test_social_awareness.py)</td><td>Auto-join, context extraction, messaging, introductions</td><td class="good">No</td></tr>
+<tr><td>Ambient sparks</td><td>9 (test_sparks.py)</td><td>Summarization, spark detection, dedup, lifecycle</td><td class="good">No (mocked call_llm)</td></tr>
+<tr><td>Memory plugin</td><td>14 (test_hivemind_plugin.py)</td><td>Plugin lifecycle, prefetch, all hivemind_* tools, idempotency</td><td class="good">No (mocked call_llm)</td></tr>
+<tr><td>Full agent pipeline</td><td>Live scenario</td><td>hermes &rarr; GLM-4.7 &rarr; plugin &rarr; Matrix &rarr; response</td><td class="bad">Yes (ZAI)</td></tr>
+</table>
+<div class="takeaway"><strong>50 automated tests</strong> (no LLM, ~8 seconds total) plus live agent scenarios with real model inference.</div>
+</div>
+
+<footer>hermes-introducer &mdash; hive mind, April 2026</footer>
+</main>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({startOnLoad:true,theme:'base',themeVariables:{primaryColor:'#fdd5d8',primaryTextColor:'#3d2b2b',primaryBorderColor:'#f5c6c6',lineColor:'#e05a6d',secondaryColor:'#e8f5ea',tertiaryColor:'#fdf6f0',noteBkgColor:'#f0faf2',noteTextColor:'#4a6b50',noteBorderColor:'#b8e6c4',actorBkg:'#fff0f3',actorBorder:'#e05a6d',actorTextColor:'#3d2b2b',signalColor:'#d1365b',signalTextColor:'#3d2b2b'},sequence:{mirrorActors:false,messageMargin:40}});
+</script>
+</body>
+</html>
