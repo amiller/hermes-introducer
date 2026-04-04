@@ -13,7 +13,7 @@ sed -i "s|^# GLM_BASE_URL=.*|GLM_BASE_URL=$GLM_BASE_URL|" "$HERMES_HOME/.env"
 [ -f "$HERMES_HOME/SOUL.md" ]     || cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
 [ -d "$INSTALL_DIR/skills" ] && python3 "$INSTALL_DIR/tools/skills_sync.py"
 
-# Patch config: model + MCP server
+# Patch config: model + hivemind memory plugin
 python3 -c "
 import yaml, os
 cfg_path = os.environ['HERMES_HOME'] + '/config.yaml'
@@ -24,17 +24,8 @@ cfg['model']['default'] = 'glm-4.7'
 cfg['model']['provider'] = 'zai'
 cfg.setdefault('agent', {})
 cfg['agent']['reasoning_effort'] = 'low'
-cfg['mcp_servers'] = {
-    'social-awareness': {
-        'command': 'python3',
-        'args': ['/opt/social_awareness_server.py'],
-        'env': {
-            'MATRIX_HOMESERVER': os.environ['MATRIX_HOMESERVER'],
-            'MATRIX_USER_ID': os.environ['MATRIX_USER_ID'],
-            'MATRIX_ACCESS_TOKEN': os.environ['MATRIX_ACCESS_TOKEN'],
-        },
-    }
-}
+cfg.setdefault('memory', {})
+cfg['memory']['provider'] = 'hivemind'
 with open(cfg_path, 'w') as f:
     yaml.dump(cfg, f, default_flow_style=False)
 "

@@ -168,6 +168,7 @@ class MatrixBackend:
         joined = sync_data.get("rooms", {}).get("join", {})
         peers = []
         seen_rooms = set()
+        seen_peers = set()
 
         for room_id in list(joined.keys()) + list(self._peer_rooms.keys()):
             if room_id in seen_rooms:
@@ -177,13 +178,15 @@ class MatrixBackend:
             if not meta:
                 meta = await self._get_account_data(room_id, PEER_ACCOUNT_DATA_KEY)
             if not meta:
-                # Try to discover peer in this joined room
                 meta = await self._extract_peer_from_room(room_id)
                 if meta:
                     await self._put_account_data(room_id, PEER_ACCOUNT_DATA_KEY, meta)
             if meta:
                 self._peer_rooms[room_id] = meta
-                peers.append(_format_peer(meta))
+                peer_id = meta.get("peer_id", "")
+                if peer_id not in seen_peers:
+                    seen_peers.add(peer_id)
+                    peers.append(_format_peer(meta))
 
         return peers
 
