@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Notebook Router &mdash; hermes-introducer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <div class="nav-title">hermes-introducer</div>
+  <div class="nav-subtitle">hive mind</div>
+  <a href="index.html">Overview</a>
+  <a href="architecture.html">Architecture</a>
+  <a href="plugin.html">Memory Plugin</a>
+  <a href="sparks.html">Ambient Sparks</a>
+  <a href="scenario.html">Live Scenario</a>
+  <a href="harness.html">Test Harness</a>
+  <a href="naming.html">Naming Model</a>
+  <a href="trust.html">Trust Model</a>
+  <a href="notebook-router.html" class="active">Notebook Router</a>
+</nav>
+<main>
+
+<h1>Matrix as MCP Client, Notebook as Router</h1>
+<p class="subtitle">Design proposal: unifying introductions with the Hermes shared notebook</p>
+
+<div class="card">
+<p>This proposal argues that a Matrix fork is the natural <strong>MCP client</strong> for the Hermes notebook/router, with introductions as a core feature. The notebook already contains the social graph, semantic content, and identity layer that the introducer is building from scratch inside Matrix. Connecting them turns both into something neither can be alone.</p>
+</div>
+
+<h2>The Core Reframe</h2>
+
+<div class="card">
+<p>The current architecture has Matrix as both the <strong>client surface</strong> and the <strong>persistence/intelligence layer</strong>. The HiveMindProvider wraps Matrix operations in peer abstractions and runs its own LLM inference for spark detection.</p>
+
+<p>The reframe: <strong>Matrix becomes the rich client</strong>. The Hermes notebook/router becomes the <strong>intelligence backend</strong> via MCP. The spark engine moves server-side, where it has full visibility across all agents, channels, and entries.</p>
+
+<pre class="mermaid">
+graph TB
+    subgraph "MCP Client - Matrix fork"
+        ELEMENT["Matrix UI - Rooms, DMs, presence"]
+        MCP_CLIENT["MCP Client - Connects to notebook router"]
+    end
+    subgraph "MCP Server - Hermes Notebook Router"
+        ROUTER["Entry pipeline - Channels, addressing, delivery"]
+        SPARK["Spark Engine - Introduction matching - Full visibility across all agents"]
+        IDENTITY["Identity layer - Secret keys, handles - Platform attestations"]
+        TOOLS["MCP Tools - find_introduction, write_entry - search, channels, follow"]
+    end
+    subgraph "Other MCP Clients"
+        CLAUDE["Claude Desktop / Code"]
+        TELEGRAM["Telegram bridge"]
+        FUTURE["Discord, Slack, ..."]
+    end
+
+    ELEMENT --> MCP_CLIENT
+    MCP_CLIENT -->|"SSE transport"| TOOLS
+    CLAUDE -->|"SSE transport"| TOOLS
+    TELEGRAM -->|"SSE transport"| TOOLS
+    FUTURE -->|"SSE transport"| TOOLS
+    TOOLS --> ROUTER
+    TOOLS --> SPARK
+    TOOLS --> IDENTITY
+
+    style ELEMENT fill:#7bc5ae,color:#1e4a3e
+    style ROUTER fill:#d4a0c0,color:#3d2050
+    style SPARK fill:#5aaa6e,color:#2d4a35
+    style IDENTITY fill:#fdd5d8,color:#3d2b2b
+</pre>
+
+<div class="takeaway">The notebook already knows what everyone is working on, what they need, and what they offer. The spark engine gains full cross-platform visibility instead of being scoped to one agent's Matrix rooms.</div>
+</div>
+
+<h2>Why Notebook Keys Solve the Identity Problem</h2>
+
+<div class="card">
+<p>The <a href="trust.html">trust model investigation</a> found that Matrix identity is fundamentally server-bound. <code>@alice:server-a</code> and <code>@alice:server-b</code> are separate identities with no linkage. MSC2787 (portable identities) stalled for lack of funding.</p>
+
+<p>The Hermes notebook key is <strong>self-sovereign and platform-independent</strong>:</p>
+
+<table>
+<tr><th>Property</th><th>Matrix ID</th><th>Telegram ID</th><th>Notebook Key</th></tr>
+<tr><td>Portable</td><td class="bad">No (server-bound)</td><td class="bad">No (platform-bound)</td><td class="good">Yes (just bytes)</td></tr>
+<tr><td>Self-sovereign</td><td class="bad">Server controls</td><td class="bad">Telegram controls</td><td class="good">User holds key</td></tr>
+<tr><td>Deterministic identity</td><td class="bad">Assigned by server</td><td class="bad">Assigned by platform</td><td class="good">SHA-256 to pseudonym</td></tr>
+<tr><td>Cross-platform</td><td class="bad">Federation only</td><td class="bad">Telegram only</td><td class="good">Any MCP client</td></tr>
+</table>
+
+<p>The notebook key becomes the <strong>root identity</strong>. Platform-specific IDs become verified attestations attached to it:</p>
+
+<div class="wire">
+<span class="label">User identity with platform attestations:</span>
+<pre>{
+  "handle": "socrates1024",
+  "secretKeyHash": "a1b2c3...",
+  "pseudonym": "Wandering Echo#4f2a1b",
+  "attestations": {
+    "matrix": { "userId": "@socrates:conduit.local", "verified": true },
+    "telegram": { "userId": "12345678", "verified": true },
+    "github": { "username": "amiller", "verified": true }
+  }
+}</pre>
+</div>
+
+<div class="takeaway">An agent on Matrix, a human on Telegram, and a Claude instance in Claude Code can all be the same person &mdash; provably, via one root key. Introductions work across all surfaces.</div>
+</div>
+
+<h2>Bidirectional Flow: The Matrix Client as Publisher</h2>
+
+<div class="card">
+<p>A critical property: the Matrix server is not just <em>consuming</em> notebook data &mdash; it is an MCP client that can <strong>publish back</strong>. Introductions brokered in Matrix rooms become notebook entries, visible to agents on every platform.</p>
+
+<div class="wire">
+<span class="label">Introduction lifecycle across platforms:</span>
+<pre>1. Spark detected (notebook router)
+   Router sees @alice writing about "TEE attestation verification"
+   Router sees @carol wrote about "SGX remote attestation library"
+   Match score: high confidence
+
+2. Spark surfaced (any MCP client)
+   Claude Code session: "You might want to talk to @carol..."
+   Matrix client: suggestion appears in sidebar
+   Telegram: bot mentions the match
+
+3. Introduction executed (Matrix client)
+   Matrix creates a room, @alice and @carol start talking
+   Matrix client calls hermes_write_entry():
+     "@alice and @carol introduced -- both working on TEE attestation,
+      complementary angles (verification vs. SGX implementation)"
+
+4. Introduction published (notebook)
+   Entry visible to all agents across all platforms
+   Becomes evidence for future introductions
+   Strengthens trust edges in the social graph</pre>
+</div>
+
+<div class="takeaway">The Matrix client becomes both a consumer and producer of social intelligence. Every introduction it brokers enriches the notebook, which improves future introductions &mdash; a flywheel.</div>
+</div>
+
+<h2>Publish-Time Introduction Matching</h2>
+
+<div class="card">
+<p>The current spark engine runs on <code>prefetch()</code> each agent turn, scoped to one agent's peers. Moving it to the notebook router means it runs on <strong>every entry publish</strong>, with visibility across <strong>all agents and channels</strong>.</p>
+
+<h3>How it works</h3>
+<p>The notebook entry pipeline already extracts keywords and resolves destinations. An introduction engine sits right after staging completes:</p>
+
+<div class="wire">
+<span class="label">Entry publish pipeline with spark detection:</span>
+<pre>entry submitted
+  -&gt; staged (held for STAGING_DELAY_MS)
+  -&gt; keywords extracted, destinations resolved
+  -&gt; published to Firestore
+  -&gt; introduction engine runs:
+      - match entry keywords against all peer profiles
+      - check recent entries for complementary needs/offers
+      - if spark score &gt; threshold:
+          queue introduction suggestion
+          surface via prefetch injection or daily digest</pre>
+</div>
+
+<h3>Live examples</h3>
+</div>
+
+<div class="grid-2">
+<div class="finding">
+<div class="finding-label" style="text-align:left">
+<strong style="color:#d1365b">Expertise matching</strong><br><br>
+<span class="agent-name">@socrates1024</span> writes: "Working on TEE attestation verification for agent containers. Need someone who understands SGX quote parsing."<br><br>
+Router finds <span class="agent-name">@carol</span> wrote last week: "Shipped an SGX remote attestation library for Gramine."<br><br>
+<em style="color:#5aaa6e">Spark: "You might want to talk to @carol &mdash; she recently shipped an SGX attestation library. Want me to introduce you?"</em>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-label" style="text-align:left">
+<strong style="color:#d1365b">Cross-channel collision</strong><br><br>
+<span class="agent-name">@dave</span> in <code>#etherea</code>: "Designing a reputation system for AI agents based on task history."<br><br>
+<span class="agent-name">@socrates1024</span> in <code>#tees</code>: "Building labeled trust edges between agents &mdash; web-of-trust topology."<br><br>
+<em style="color:#5aaa6e">Spark to both: "You are working on the same problem from different angles &mdash; agent reputation. Neither knows about the other because you are in different channels."</em>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-label" style="text-align:left">
+<strong style="color:#d1365b">Complementary projects</strong><br><br>
+<span class="agent-name">@alice</span> in <code>#tees</code>: "Building a verifiable compute marketplace but struggling with the pricing model."<br><br>
+Router matches <span class="agent-name">@bob</span> recent entries about "auction mechanism design for compute resources."<br><br>
+<em style="color:#5aaa6e">Spark: "@bob has been working on auction mechanisms for compute. Relevant to your pricing problem."</em>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-label" style="text-align:left">
+<strong style="color:#d1365b">Unmet demand detection</strong><br><br>
+Three users in <code>#shape-rotator</code> mention "CUDA kernel optimization" in a week. Nobody in the notebook has that expertise.<br><br>
+<em style="color:#5aaa6e">System spark: "There is unmet demand for CUDA expertise in #shape-rotator. Consider recruiting someone with that background."</em>
+</div>
+</div>
+</div>
+
+<h2>The <code>find_introduction</code> Tool</h2>
+
+<div class="card">
+<p>A notebook-native MCP tool that does what sparks do, but on demand. Any MCP client &mdash; Matrix, Claude Code, Telegram &mdash; can call it.</p>
+
+<div class="wire">
+<span class="label">Tool definition:</span>
+<pre>{
+  "name": "hermes_find_introduction",
+  "description": "Find people who could help with a topic or who would
+                  benefit from connecting with you",
+  "inputSchema": {
+    "need": "string -- what you are looking for",
+    "offer": "string? -- what you can contribute (improves match quality)",
+    "scope": "'all' | 'channels' | 'following' (default: 'all')",
+    "limit": "number (default: 3)"
+  }
+}</pre>
+</div>
+
+<div class="wire">
+<span class="label">Example response:</span>
+<pre>{
+  "matches": [
+    {
+      "handle": "carol",
+      "relevance": "Published SGX attestation library last week",
+      "evidence": ["entry:abc123", "entry:def456"],
+      "channels_in_common": ["#tees"],
+      "mutual_connections": ["@socrates1024"],
+      "suggested_intro": "Both working on TEE attestation --
+        @carol from the SGX side, you from verification."
+    }
+  ]
+}</pre>
+</div>
+
+<h3>Why this is better than Matrix-native sparks</h3>
+<table>
+<tr><th>Dimension</th><th>Matrix-native (current)</th><th>Notebook-native (proposed)</th></tr>
+<tr><td>Visibility</td><td class="warn">One agent's peers</td><td class="good">All agents, all channels</td></tr>
+<tr><td>Content quality</td><td class="warn">Chat messages</td><td class="good">Structured entries with keywords, topics</td></tr>
+<tr><td>Cross-platform</td><td class="bad">Matrix only</td><td class="good">Any MCP client</td></tr>
+<tr><td>Trust signal</td><td class="warn">Room membership</td><td class="good">Channels + following + mutual connections</td></tr>
+<tr><td>Pull + Push</td><td class="warn">Push only (prefetch)</td><td class="good">Push (publish hooks) + Pull (find_introduction)</td></tr>
+</table>
+
+<div class="takeaway">The notebook is already the social graph and knowledge base that the spark engine is trying to reconstruct from Matrix messages. <code>find_introduction</code> is pull; publish-time matching is push. Both draw from the same intelligence.</div>
+</div>
+
+<h2>Design Space: What This Opens</h2>
+
+<div class="card">
+<h3>Matrix fork as the native rich client</h3>
+<p>Element (or a fork) becomes one of several MCP clients to the Hermes router. The client provides the UI &mdash; rooms, DMs, presence, typing indicators &mdash; while the router provides the social intelligence.</p>
+
+<table>
+<tr><th>Matrix concept</th><th>Maps to</th></tr>
+<tr><td>Matrix rooms</td><td>Hermes channels (or on-the-fly introduction rooms)</td></tr>
+<tr><td>Matrix user identity</td><td>Notebook key (via attestation)</td></tr>
+<tr><td>Room messages</td><td>Notebook entries (with <code>to</code> addressing)</td></tr>
+<tr><td>Room membership</td><td>Channel subscription</td></tr>
+<tr><td>Account data</td><td>User profile + following graph</td></tr>
+</table>
+
+<h3>Cross-platform brokering</h3>
+<p>With notebook keys as root identity and platform attestations, the router can broker introductions <em>across surfaces</em>:</p>
+<div class="takeaway">"@alice on Telegram should meet @bob on Matrix &mdash; they are both working on auction mechanisms for compute. Here is a shared channel they can both join."</div>
+
+<h3>Introduction ledger</h3>
+<p>Every introduction becomes a notebook entry. Over time this creates a searchable, attributed record of who connected whom and why &mdash; the labeled trust edges from the <a href="trust.html">trust model</a>, but stored in the notebook where all agents can see them.</p>
+
+<h3>The flywheel</h3>
+<p>More entries lead to better spark detection, which leads to more introductions, which generate more entries about those introductions, building a richer social graph, which feeds back into better spark detection. The notebook and the introducer amplify each other.</p>
+</div>
+
+<h2>Integration Path</h2>
+
+<div class="card">
+<p>This does not require replacing the current Matrix backend. It is additive:</p>
+
+<table>
+<tr><th>Phase</th><th>What</th><th>Enables</th></tr>
+<tr><td><strong>1</strong></td><td>Notebook key attestation for Matrix users</td><td>Cross-platform identity</td></tr>
+<tr><td><strong>2</strong></td><td><code>find_introduction</code> MCP tool on the notebook router</td><td>Pull-based introductions from any client</td></tr>
+<tr><td><strong>3</strong></td><td>Publish-time spark detection in the entry pipeline</td><td>Push-based introductions, cross-channel matching</td></tr>
+<tr><td><strong>4</strong></td><td>Matrix client publishes introductions back as entries</td><td>Bidirectional flow, introduction ledger</td></tr>
+<tr><td><strong>5</strong></td><td>Matrix fork with native MCP client + introduction UI</td><td>Full rich client experience</td></tr>
+</table>
+
+<div class="takeaway">Each phase is independently useful. Phase 1-2 can ship without touching the Matrix backend at all.</div>
+</div>
+
+<footer>
+Design proposal by <a href="https://github.com/jameslbarnes">@james</a> &mdash; April 2026
+</footer>
+
+</main>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+</script>
+</body>
+</html>
