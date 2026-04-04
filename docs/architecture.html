@@ -107,8 +107,8 @@ Available tools:
 <tr><td>Peer name</td><td>Username extracted from <code>@user:server</code></td></tr>
 <tr><td>Introduction context</td><td>"About @user: ..." messages in the room</td></tr>
 <tr><td>Introduced by</td><td>Room creator (from <code>m.room.create</code> state event)</td></tr>
-<tr><td>Send message</td><td><code>PUT /rooms/{room_id}/send/m.room.message/{txn}</code></td></tr>
-<tr><td>Check messages</td><td><code>GET /rooms/{room_id}/messages?dir=b</code></td></tr>
+<tr><td>Send message</td><td><code>PUT /rooms/{room_id}/send/m.room.message/{txn}</code> (plaintext &mdash; no E2EE)</td></tr>
+<tr><td>Check messages</td><td><code>GET /rooms/{room_id}/messages?dir=b</code> (plaintext &mdash; no E2EE)</td></tr>
 <tr><td>Peer metadata</td><td><code>PUT /user/{id}/rooms/{room}/account_data/social.awareness.peer</code></td></tr>
 <tr><td>Peer summary (needs/offers)</td><td><code>PUT /user/{id}/rooms/{room}/account_data/social.awareness.summary</code></td></tr>
 <tr><td>Introduction sparks</td><td><code>PUT /user/{id}/account_data/social.awareness.sparks</code> (global)</td></tr>

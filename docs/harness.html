@@ -178,12 +178,12 @@ docker compose -f docker-compose.agent-test.yml \
   --env-file agent-test/.env.agents up hermes-of-bob hermes-of-carol -d
 
 # 5. Verify memory plugin
-docker exec hermes-introducer-hermes-of-bob-1 hermes memory test
-# → ✓ hivemind provider loaded, 6 tools discovered
+docker exec hermes-introducer-hermes-of-bob-1 hermes memory
+# → hivemind: installed ✓, available ✓
 
 # 6. Chat with an agent
 docker exec -it hermes-introducer-hermes-of-bob-1 hermes chat
-# → "who do you know?" → calls list_peers → "I know hermes-of-carol..."</pre>
+# → "who do you know?" → calls hivemind_list_peers → "I know hermes-of-carol..."</pre>
 </div>
 </div>
 
@@ -193,13 +193,17 @@ docker exec -it hermes-introducer-hermes-of-bob-1 hermes chat
 <div class="wire">
 <span class="label">Dockerfile (agent-test/Dockerfile):</span>
 <pre>FROM python:3.11-slim
-RUN pip install hermes-agent[all] aiohttp matrix-nio
+RUN git clone --branch v2026.4.3 hermes-agent && pip install ".[all]" aiohttp matrix-nio
 
-# Plugin files copied into hermes plugins dir
-COPY plugins/memory/hivemind/     → /opt/hermes-agent/plugins/memory/hivemind/
-COPY matrix_backend.py            → /opt/hermes-agent/plugins/memory/hivemind/
-COPY introducer.py                → /opt/hermes-agent/plugins/memory/hivemind/
-COPY skills/                      → /opt/hermes-agent/skills/introducer/</pre>
+# Plugin files copied into hermes source plugins dir
+COPY hivemind/          → /opt/hermes-agent/plugins/memory/hivemind/
+COPY matrix_backend.py  → /opt/hermes-agent/matrix_backend.py
+
+# Also copy to site-packages (hermes resolves plugins from both paths)
+RUN cp -r plugins/memory/hivemind "$SITE_PACKAGES/plugins/memory/hivemind"
+RUN cp matrix_backend.py "$SITE_PACKAGES/matrix_backend.py"
+
+COPY skills/            → /opt/hermes-agent/skills/introducer/</pre>
 </div>
 <div class="wire">
 <span class="label">Entrypoint (agent-test/agent-entrypoint.sh):</span>
@@ -238,6 +242,19 @@ COPY skills/                      → /opt/hermes-agent/skills/introducer/</pre>
 <tr><td>Full agent pipeline</td><td>Live scenario</td><td>hermes &rarr; GLM-4.7 &rarr; plugin &rarr; Matrix &rarr; response</td><td class="bad">Yes (ZAI)</td></tr>
 </table>
 <div class="takeaway"><strong>50 automated tests</strong> (no LLM, ~8 seconds total) plus live agent scenarios with real model inference.</div>
+</div>
+
+<div class="card">
+<h2>Verified: Live Agent Round Trip</h2>
+<p>The full pipeline was tested end-to-end on 2026-04-04 with GLM-4.7 via ZAI:</p>
+<table>
+<tr><th>Step</th><th>Agent</th><th>Tool called</th><th>Result</th></tr>
+<tr><td>1. Discover peer</td><td>hermes-of-bob</td><td><code>hivemind_list_peers</code></td><td class="good">Found hermes-of-carol (introduced by hermes-of-alice)</td></tr>
+<tr><td>2. Send message</td><td>hermes-of-bob</td><td><code>hivemind_send_to_peer</code></td><td class="good">Audit request delivered to Carol</td></tr>
+<tr><td>3. Read &amp; respond</td><td>hermes-of-carol</td><td><code>hivemind_list_peers</code> + <code>hivemind_check_messages</code> + <code>hivemind_send_to_peer</code></td><td class="good">Read Bob's request, sent proposal ($15-25K, 2 weeks)</td></tr>
+<tr><td>4. Read response</td><td>hermes-of-bob</td><td><code>hivemind_check_messages</code></td><td class="good">Summarized Carol's proposal accurately</td></tr>
+</table>
+<p>All tool calls completed in &lt;1 second. Messages were unencrypted plaintext via Conduit (see <a href="trust.html">Trust Model</a> for E2EE roadmap).</p>
 </div>
 
 <footer>hermes-introducer &mdash; hive mind, April 2026</footer>

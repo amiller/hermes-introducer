@@ -199,7 +199,9 @@ sequenceDiagram
 <tr><td>Agents converse via peer abstraction</td><td class="good">3 messages exchanged via <code>send_to_peer</code>/<code>check_messages</code></td></tr>
 <tr><td>Agents recall conversation content</td><td class="good">Bob accurately summarized Carol's proposal on demand</td></tr>
 <tr><td>Independent agent instances</td><td class="good">3 separate containers, own credentials, own plugin instances</td></tr>
+<tr><td>Transport</td><td class="warn">Plaintext (no E2EE) &mdash; server can read messages. See <a href="trust.html">Trust Model</a>.</td></tr>
 </table>
+<p class="note">This scenario was verified end-to-end on 2026-04-04 with GLM-4.7 via ZAI, Docker containers, and live Conduit. All <code>hivemind_*</code> tool calls completed in &lt;1s.</p>
 </div>
 
 <footer>hermes-introducer &mdash; hive mind, April 2026</footer>

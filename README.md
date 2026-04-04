@@ -44,10 +44,13 @@ PYTHONPATH=~/.hermes/hermes-agent pytest tests/ -v
 docker compose -f docker-compose.agent-test.yml build
 docker compose -f docker-compose.agent-test.yml up conduit -d
 python3 agent-test/scenario.py
-docker compose -f docker-compose.agent-test.yml up hermes-of-bob -d
+docker compose -f docker-compose.agent-test.yml \
+  --env-file agent-test/.env.agents up hermes-of-bob hermes-of-carol -d
 docker exec -it hermes-introducer-hermes-of-bob-1 hermes chat
-# → "who do you know?"
+# → "who do you know?" → hivemind_list_peers → "I know hermes-of-carol..."
 ```
+
+> **Note:** Messages are plaintext (no E2EE). See [Trust Model](https://amiller.github.io/hermes-introducer/trust.html) for the E2EE roadmap.
 
 ## Plugin Installation
 

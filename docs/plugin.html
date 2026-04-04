@@ -151,14 +151,15 @@ MATRIX_USER_ID=@hermes-of-alice:localhost
 MATRIX_ACCESS_TOKEN=syt_aGVybWVzLW9mLWFsaWNl_...</pre>
 </div>
 <p>All three env vars must be set for <code>is_available()</code> to return true. Without them, the agent falls back to built-in memory only.</p>
+<p class="note"><strong>Transport:</strong> All messages are plaintext (no E2EE). The Matrix server can read all peer conversations. See <a href="trust.html">Trust Model</a> for the E2EE roadmap.</p>
 </div>
 
 <div class="card">
 <h2>Source Files</h2>
 <table>
 <tr><th>File</th><th>Lines</th><th>Role</th></tr>
-<tr><td><code>plugins/memory/hivemind/__init__.py</code></td><td>~280</td><td>HiveMindProvider + spark engine + tool dispatch</td></tr>
-<tr><td><code>plugins/memory/hivemind/plugin.yaml</code></td><td>&mdash;</td><td>Plugin metadata (name, version, description)</td></tr>
+<tr><td><code>hivemind/__init__.py</code></td><td>~280</td><td>HiveMindProvider + spark engine + tool dispatch</td></tr>
+<tr><td><code>hivemind/plugin.yaml</code></td><td>&mdash;</td><td>Plugin metadata (name, version, description)</td></tr>
 <tr><td><code>matrix_backend.py</code></td><td>~280</td><td>Matrix HTTP client (sync, rooms, messages, account_data)</td></tr>
 <tr><td><code>skills/social-awareness/SKILL.md</code></td><td>~70</td><td>Agent-facing documentation injected into system prompt</td></tr>
 </table>
