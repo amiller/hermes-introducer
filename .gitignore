@@ -19,5 +19,6 @@ report/
 report-v2/
 report-v3/
 
-# TLS certs (private keys)
-certs/*.key
+# Old plugin path
+plugins/
+certs/

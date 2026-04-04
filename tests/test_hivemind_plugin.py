@@ -2,9 +2,8 @@ import pytest, pytest_asyncio, aiohttp, json, os, sys, uuid
 from unittest.mock import patch, MagicMock
 from introducer import MatrixIntroducer
 
-# Add plugin to path so we can import it
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "plugins", "memory", "hivemind"))
-from plugins.memory.hivemind import (
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from hivemind import (
     HiveMindProvider, _run_async, _format_context,
     _maybe_update_and_spark, _update_spark_status,
     SUMMARY_KEY, SPARKS_KEY, ALL_TOOLS,

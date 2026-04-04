@@ -35,7 +35,7 @@ python3 setup_users.py
 python3 agent-test/scenario.py
 
 # Run tests (50 total)
-PYTHONPATH=~/.hermes/hermes-agent:. pytest test_introducer.py test_social_awareness.py test_sparks.py test_hivemind_plugin.py -v
+PYTHONPATH=~/.hermes/hermes-agent pytest tests/ -v
 ```
 
 ## Docker Test Environment (isolated)
@@ -53,7 +53,7 @@ docker exec -it hermes-introducer-hermes-of-bob-1 hermes chat
 
 ```bash
 # Symlink into hermes-agent plugins directory
-ln -s $(pwd)/plugins/memory/hivemind ~/.hermes/hermes-agent/plugins/memory/hivemind
+ln -s $(pwd)/hivemind ~/.hermes/hermes-agent/plugins/memory/hivemind
 ln -s $(pwd)/matrix_backend.py ~/.hermes/hermes-agent/matrix_backend.py
 
 # Configure
@@ -69,20 +69,21 @@ export MATRIX_ACCESS_TOKEN="your_token"
 
 | File | Purpose |
 |------|---------|
-| `plugins/memory/hivemind/__init__.py` | HiveMindProvider — MemoryProvider plugin (~280 lines) |
+| `hivemind/` | HiveMindProvider — MemoryProvider plugin (~280 lines) |
 | `matrix_backend.py` | Matrix HTTP client — sync, peers, messaging (~280 lines) |
-| `introducer.py` | Original room creation logic (matrix-nio, ~30 lines) |
-| `social_awareness_server.py` | Legacy MCP server approach (reference only) |
+| `introducer.py` | Room creation logic (matrix-nio, ~30 lines) |
+| `social_awareness_server.py` | Legacy MCP server approach (reference) |
 | `skills/social-awareness/SKILL.md` | Agent-facing documentation |
 | `docs/` | Report (GitHub Pages) |
 | `agent-test/` | Docker-based isolated test environment |
+| `tests/` | 50 automated tests |
 
 ## Tests
 
 | File | Tests | What |
 |------|-------|------|
-| `test_introducer.py` | 14 | Matrix protocol: rooms, membership, messaging |
-| `test_social_awareness.py` | 13 | Peer abstraction: discovery, context, introductions |
-| `test_sparks.py` | 9 | Spark engine: summarization, detection, lifecycle |
-| `test_hivemind_plugin.py` | 14 | Memory plugin: prefetch, tools, dispatch |
+| `tests/test_introducer.py` | 14 | Matrix protocol: rooms, membership, messaging |
+| `tests/test_social_awareness.py` | 13 | Peer abstraction: discovery, context, introductions |
+| `tests/test_sparks.py` | 9 | Spark engine: summarization, detection, lifecycle |
+| `tests/test_hivemind_plugin.py` | 14 | Memory plugin: prefetch, tools, dispatch |
 | **Total** | **50** | All against live Conduit, no LLM needed |
