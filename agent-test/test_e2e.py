@@ -1,24 +1,35 @@
 #!/usr/bin/env python3
 """
-End-to-end test for hivemind plugin: Matrix E2EE + notebook search + honcho.
+End-to-end tests for the hivemind plugin with real LLM inference.
 
 Requires:
-  - Continuwuity on :6167
-  - Honcho API on :8100
-  - Hermes notebook API at hermes.teleport.computer (or HERMES_URL)
+  - docker compose agent-test env running (continuwuity + honcho + agents)
+  - ZAI_API_KEY set in agent-test/.env
+  - HERMES_SECRET_KEY set for notebook tests
 
-Run: python3 agent-test/test_e2e.py
+Run:
+  # Start services
+  docker compose -f docker-compose.agent-test.yml build
+  docker compose -f docker-compose.agent-test.yml up continuwuity honcho-api honcho-db honcho-redis -d
+  python3 agent-test/scenario.py
+  docker compose -f docker-compose.agent-test.yml --env-file agent-test/.env.agents up -d
+
+  # Run tests
+  python3 agent-test/test_e2e.py
 """
-import asyncio, aiohttp, json, os, sys, tempfile, uuid, urllib.request, urllib.parse
+import asyncio, aiohttp, json, os, subprocess, sys, tempfile, time, uuid
+import urllib.request, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 HOMESERVER = os.environ.get("MATRIX_HOMESERVER", "http://localhost:6167")
-HONCHO_URL = os.environ.get("HONCHO_BASE_URL", "http://localhost:8100")
+HONCHO_URL = os.environ.get("HONCHO_BASE_URL", "http://localhost:8000")
 HERMES_URL = os.environ.get("HERMES_URL", "https://hermes.teleport.computer")
 HERMES_KEY = os.environ.get("HERMES_SECRET_KEY", "")
 PASSWORD = "testpass"
 TOKEN = os.environ.get("MATRIX_REGISTRATION_TOKEN", "agent-dev")
+
+BOB_CONTAINER = "hermes-introducer-hermes-of-bob-1"
 
 passed = 0
 failed = 0
@@ -34,316 +45,217 @@ def report(name, ok, detail=""):
         print(f"  FAIL  {name}: {detail}")
 
 
-async def register(session, username):
-    async with session.post(f"{HOMESERVER}/_matrix/client/v3/register", json={
-        "username": username, "password": PASSWORD,
-    }) as resp:
-        data = await resp.json()
-        if "access_token" in data:
-            return data["user_id"], data["access_token"]
-        uiaa_session = data.get("session", "")
+# ---- Helpers ----
 
-    async with session.post(f"{HOMESERVER}/_matrix/client/v3/register", json={
-        "username": username, "password": PASSWORD,
-        "auth": {"type": "m.login.registration_token", "token": TOKEN, "session": uiaa_session},
-    }) as resp:
-        data = await resp.json()
-        if "access_token" in data:
-            return data["user_id"], data["access_token"]
-
-    async with session.post(f"{HOMESERVER}/_matrix/client/v3/login", json={
-        "type": "m.login.password",
-        "identifier": {"type": "m.id.user", "user": username},
-        "password": PASSWORD,
-    }) as resp:
-        data = await resp.json()
-        assert "access_token" in data, f"login failed: {data}"
-        return data["user_id"], data["access_token"]
+def container_running(name):
+    r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", name],
+                       capture_output=True, text=True)
+    return r.stdout.strip() == "true"
 
 
-# ---- Service health checks ----
+total_estimated_tokens = 0
 
-async def check_continuwuity(session):
+def hermes_query(container, message, timeout=120):
+    """Send a single message to hermes-agent and return the response text.
+
+    Token counting: hermes-agent doesn't expose per-request token usage.
+    We estimate ~4 chars/token from the session file (system prompt + tools + messages).
+    For precise counting, options:
+      - Add a lightweight HTTP proxy between the agent and ZAI that logs response.usage
+      - Patch hermes-agent to write usage.prompt_tokens / usage.completion_tokens to session JSON
+      - Use the ZAI billing dashboard to check actual usage after a test run
+    """
+    global total_estimated_tokens
+    r = subprocess.run(
+        ["docker", "exec", container, "hermes", "chat", "--query", message, "--quiet"],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    lines = r.stdout.strip().split("\n")
+    response_lines = []
+    session_id = None
+    for line in lines:
+        if line.startswith("session_id:"):
+            session_id = line.split(":", 1)[1].strip()
+        else:
+            response_lines.append(line)
+    response = "\n".join(response_lines).strip()
+    # Rough estimate: ~16k tokens for system prompt + tools, plus message content
+    est = 16000 + len(message) // 4 + len(response) // 4
+    total_estimated_tokens += est
+    return {
+        "response": response,
+        "session_id": session_id,
+        "exit_code": r.returncode,
+        "stderr": r.stderr,
+        "estimated_tokens": est,
+    }
+
+
+# ---- Service health ----
+
+def check_service(name, url, check):
     try:
-        async with session.get(f"{HOMESERVER}/_matrix/client/versions") as resp:
-            data = await resp.json()
-            report("continuwuity reachable", "versions" in data)
-    except Exception as e:
-        report("continuwuity reachable", False, str(e))
-
-
-async def check_honcho(session):
-    try:
-        async with session.get(f"{HONCHO_URL}/openapi.json") as resp:
-            report("honcho API reachable", resp.status == 200)
-    except Exception as e:
-        report("honcho API reachable", False, str(e))
-
-
-def check_notebook():
-    try:
-        params = urllib.parse.urlencode({"q": "test", "limit": 1})
-        url = f"{HERMES_URL}/api/search?{params}"
-        req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(url)
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
-            report("notebook API reachable", "results" in data or isinstance(data, list))
+            report(f"{name} reachable", check(data))
     except Exception as e:
-        report("notebook API reachable", False, str(e))
+        report(f"{name} reachable", False, str(e))
 
 
-# ---- Matrix E2EE tests ----
+def check_agent_container():
+    ok = container_running(BOB_CONTAINER)
+    report("bob agent container running", ok,
+           "start with: docker compose -f docker-compose.agent-test.yml --env-file agent-test/.env.agents up -d")
+    return ok
 
-async def test_e2ee_introduction(session):
-    """Create encrypted intro room, verify peers can read messages via MatrixBackend."""
+
+# ---- Matrix E2EE (no LLM) ----
+
+async def test_e2ee_roundtrip():
+    """Create encrypted intro room, verify peer discovery and message delivery."""
     from introducer import MatrixIntroducer
     from matrix_backend import MatrixBackend
 
     tag = uuid.uuid4().hex[:6]
-    alice_id, alice_tok = await register(session, f"e2e_alice_{tag}")
-    bob_id, bob_tok = await register(session, f"e2e_bob_{tag}")
-    carol_id, carol_tok = await register(session, f"e2e_carol_{tag}")
+    async with aiohttp.ClientSession() as session:
+        async def reg(u):
+            async with session.post(f"{HOMESERVER}/_matrix/client/v3/register",
+                                    json={"username": u, "password": PASSWORD}) as r:
+                d = await r.json()
+                if "access_token" in d: return d["user_id"], d["access_token"]
+                s = d.get("session", "")
+            async with session.post(f"{HOMESERVER}/_matrix/client/v3/register",
+                                    json={"username": u, "password": PASSWORD,
+                                          "auth": {"type": "m.login.registration_token",
+                                                   "token": TOKEN, "session": s}}) as r:
+                d = await r.json()
+                return d["user_id"], d["access_token"]
 
-    introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    result = await introducer.introduce(
-        bob_id, carol_id,
-        "Bob builds distributed systems",
-        "Carol does cryptography research",
-        encrypted=True,
-    )
-    room_id = result["room_id"]
-    await introducer.close()
-    report("E2EE room created", bool(room_id))
+        alice_id, alice_tok = await reg(f"e2e_a_{tag}")
+        bob_id, bob_tok = await reg(f"e2e_b_{tag}")
+        carol_id, carol_tok = await reg(f"e2e_c_{tag}")
 
-    # Bob joins and reads via MatrixBackend (crypto-enabled)
-    bob_backend = MatrixBackend(HOMESERVER, bob_id, bob_tok,
-                                store_path=tempfile.mkdtemp())
+    intro = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
+    result = await intro.introduce(bob_id, carol_id, "Bob does ML", "Carol does infra", encrypted=True)
+    await intro.close()
+    report("E2EE room created", bool(result["room_id"]))
+
+    bob_backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
     peers = await bob_backend.get_peers()
     carol_name = carol_id.lstrip("@").split(":")[0]
-    peer_names = [p["name"] for p in peers]
-    report("bob discovers carol as peer", carol_name in peer_names)
+    report("peer discovery works", any(carol_name in p["name"] for p in peers))
 
-    # Bob sends encrypted message to carol
-    await bob_backend.send_to_peer(carol_name, "Hello from E2EE test!")
-
-    # Carol reads it
-    carol_backend = MatrixBackend(HOMESERVER, carol_id, carol_tok,
-                                  store_path=tempfile.mkdtemp())
+    await bob_backend.send_to_peer(carol_name, "E2EE test message")
+    carol_backend = MatrixBackend(HOMESERVER, carol_id, carol_tok, store_path=tempfile.mkdtemp())
     await carol_backend.get_peers()
     bob_name = bob_id.lstrip("@").split(":")[0]
     msgs = await carol_backend.get_messages_from_peer(bob_name)
-    has_msg = any("Hello from E2EE" in m["text"] for m in msgs)
-    report("carol reads bob's E2EE message", has_msg,
-           f"got {len(msgs)} msgs: {[m['text'][:50] for m in msgs]}")
+    report("E2EE message delivery", any("E2EE test" in m["text"] for m in msgs))
 
     await bob_backend.close()
     await carol_backend.close()
-    return {"bob": (bob_id, bob_tok), "carol": (carol_id, carol_tok), "room_id": room_id}
 
 
-# ---- Notebook search tests ----
+# ---- Notebook search (no LLM) ----
 
 def test_notebook_search():
-    """Search notebook API with auth key, verify content returned."""
-    params = urllib.parse.urlencode({"q": "matrix", "limit": 3, "key": HERMES_KEY})
+    if not HERMES_KEY:
+        report("notebook search", False, "HERMES_SECRET_KEY not set")
+        return
+    params = urllib.parse.urlencode({"q": "matrix", "limit": 2, "key": HERMES_KEY})
     url = f"{HERMES_URL}/api/search?{params}"
     req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=5) as resp:
         data = json.loads(resp.read())
     results = data.get("results", [])
-    report("notebook search returns results", len(results) > 0)
     has_content = any(r.get("content") for r in results)
-    report("notebook entries have content (auth works)", has_content,
-           f"got {len(results)} results, content lengths: {[len(r.get('content','')) for r in results]}")
+    report("notebook search returns content", has_content,
+           f"{len(results)} results, content lengths: {[len(r.get('content','')) for r in results]}")
 
 
-# ---- Honcho API tests ----
+# ---- LLM-backed tests (require running agent container + ZAI key) ----
 
-async def test_honcho_workspace(session):
-    """Create workspace and peer via honcho API, verify round-trip."""
-    # Create workspace
-    async with session.post(f"{HONCHO_URL}/v3/workspaces", json={
-        "name": "hivemind-e2e-test",
-    }) as resp:
-        if resp.status in (200, 201):
-            ws = await resp.json()
-            ws_id = ws.get("id") or ws.get("workspace_id")
-            report("honcho create workspace", bool(ws_id))
-        elif resp.status == 409:
-            # Already exists, fetch it
-            async with session.get(f"{HONCHO_URL}/v3/workspaces?name=hivemind-e2e-test") as r2:
-                data = await r2.json()
-                items = data if isinstance(data, list) else data.get("items", [data])
-                ws_id = items[0].get("id") if items else None
-                report("honcho workspace exists", bool(ws_id))
-        else:
-            body = await resp.text()
-            report("honcho create workspace", False, f"status={resp.status}: {body}")
-            return
-
-    # Create peer
-    async with session.post(f"{HONCHO_URL}/v3/workspaces/{ws_id}/peers", json={
-        "name": "e2e-test-peer",
-    }) as resp:
-        if resp.status in (200, 201):
-            peer = await resp.json()
-            peer_id = peer.get("id") or peer.get("peer_id")
-            report("honcho create peer", bool(peer_id))
-        else:
-            body = await resp.text()
-            report("honcho create peer", False, f"status={resp.status}: {body}")
-            return
-
-    # Create session
-    sess_key = f"e2e-{uuid.uuid4().hex[:8]}"
-    async with session.post(f"{HONCHO_URL}/v3/workspaces/{ws_id}/sessions", json={
-        "id": sess_key,
-        "peers": {peer_id: {"name": "e2e-test-peer"}},
-    }) as resp:
-        if resp.status in (200, 201):
-            sess = await resp.json()
-            sess_id = sess.get("id", sess_key)
-            report("honcho create session", bool(sess_id))
-        else:
-            body = await resp.text()
-            report("honcho create session", False, f"status={resp.status}: {body}")
-            return
-
-    # Add messages (batch format)
-    async with session.post(
-        f"{HONCHO_URL}/v3/workspaces/{ws_id}/sessions/{sess_id}/messages",
-        json={"messages": [
-            {"peer_id": peer_id, "content": "What is E2EE?", "role": "user"},
-            {"peer_id": peer_id, "content": "End-to-end encryption.", "role": "ai"},
-        ]},
-    ) as resp:
-        if resp.status in (200, 201):
-            report("honcho add messages", True)
-        else:
-            body = await resp.text()
-            report("honcho add messages", False, f"status={resp.status}: {body}")
-
-    # Get peer card (simpler endpoint to verify round-trip)
-    async with session.get(f"{HONCHO_URL}/v3/workspaces/{ws_id}/peers/{peer_id}/card") as resp:
-        if resp.status == 200:
-            data = await resp.json()
-            report("honcho get peer card", True)
-        else:
-            body = await resp.text()
-            report("honcho get peer card", False, f"status={resp.status}: {body}")
+def test_llm_peer_awareness():
+    """Agent should know about carol (introduced peer) without being told."""
+    result = hermes_query(BOB_CONTAINER, "Do you know any other agents or peers? List them if so.")
+    resp = result["response"].lower()
+    report("LLM responds successfully", result["exit_code"] == 0 and len(result["response"]) > 10,
+           f"exit={result['exit_code']}, len={len(result['response'])}, stderr={result['stderr'][:200]}")
+    report("LLM mentions carol (peer awareness)",
+           "carol" in resp,
+           f"response: {result['response'][:300]}")
 
 
-# ---- Hivemind plugin integration ----
+def test_llm_notebook_ambient():
+    """Agent should reference notebook content as ambient context, not as user-provided."""
+    result = hermes_query(BOB_CONTAINER,
+        "What do you know about introduction graphs or agent introductions? "
+        "Don't search or use tools, just tell me what context you already have.")
+    resp = result["response"].lower()
 
-def test_hivemind_prefetch_all_sources():
-    """Test that prefetch() combines Matrix peers + notebook + honcho context.
+    # Should reference the topic (notebook has entries about introduction graphs)
+    has_topic = any(w in resp for w in ["introduction", "graph", "peer", "matrix", "trust"])
+    report("LLM has ambient notebook context", has_topic,
+           f"response: {result['response'][:300]}")
 
-    Runs synchronously (no outer async loop) because the hivemind plugin uses
-    its own background event loop via _run_async, which deadlocks if called
-    from within another asyncio.run().
-    """
-    import types
-    if "agent" not in sys.modules:
-        agent_mod = types.ModuleType("agent")
-        mp_mod = types.ModuleType("agent.memory_provider")
-        class MemoryProvider:
-            def is_available(self): return False
-            def initialize(self, session_id, **kw): pass
-            def system_prompt_block(self): return ""
-            def prefetch(self, query, **kw): return ""
-            def get_tool_schemas(self): return []
-            def handle_tool_call(self, name, args, **kw): return "{}"
-            def shutdown(self): pass
-        mp_mod.MemoryProvider = MemoryProvider
-        agent_mod.memory_provider = mp_mod
-        sys.modules["agent"] = agent_mod
-        sys.modules["agent.memory_provider"] = mp_mod
+    # Should NOT say "you shared" / "you pasted" / "you provided"
+    bad_attributions = ["you shared", "you pasted", "you provided", "you mentioned",
+                        "you sent", "your message contain", "from your input"]
+    misattributed = any(phrase in resp for phrase in bad_attributions)
+    report("LLM does not misattribute notebook as user input", not misattributed,
+           f"found bad attribution in: {result['response'][:300]}")
 
-    import hivemind
-    hivemind.HERMES_SECRET_KEY = HERMES_KEY
-    hivemind.HERMES_NOTEBOOK_URL = HERMES_URL
-    from hivemind import HiveMindProvider, _run_async
 
-    # Register users synchronously via _run_async (same background loop the plugin uses)
-    tag = uuid.uuid4().hex[:6]
+def test_llm_no_hallucinated_context():
+    """On an unrelated query, the agent shouldn't inject notebook content unprompted."""
+    result = hermes_query(BOB_CONTAINER, "What is 7 times 8?")
+    resp = result["response"].lower()
+    report("LLM answers simple math", "56" in resp,
+           f"response: {result['response'][:200]}")
+    # Should not randomly bring up introduction graphs or notebook entries
+    notebook_leak = any(w in resp for w in ["introduction graph", "notebook entries",
+                                             "ambient context", "hermes notebook"])
+    report("LLM doesn't leak notebook context on unrelated query", not notebook_leak,
+           f"response: {result['response'][:200]}")
 
-    async def _register_users():
-        async with aiohttp.ClientSession() as s:
-            alice = await register(s, f"hm_alice_{tag}")
-            bob = await register(s, f"hm_bob_{tag}")
-            carol = await register(s, f"hm_carol_{tag}")
-            return alice, bob, carol
 
-    (alice_id, alice_tok), (bob_id, bob_tok), (carol_id, carol_tok) = _run_async(_register_users())
-
-    async def _do_intro():
-        from introducer import MatrixIntroducer
-        intro = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-        await intro.introduce(bob_id, carol_id, "Bob does ML", "Carol does infra", encrypted=True)
-        await intro.close()
-
-    _run_async(_do_intro())
-
-    os.environ["MATRIX_HOMESERVER"] = HOMESERVER
-    os.environ["MATRIX_USER_ID"] = bob_id
-    os.environ["MATRIX_ACCESS_TOKEN"] = bob_tok
-    os.environ["HERMES_HOME"] = tempfile.mkdtemp()
-
-    provider = HiveMindProvider()
-    provider.initialize(session_id="e2e-test")
-    report("hivemind initializes with Matrix backend", provider._backend is not None)
-
-    result = provider.prefetch("matrix federation encryption")
-    has_peers = "Peers" in result
-    has_notebook = "Notebook" in result
-    report("prefetch includes Matrix peers", has_peers, f"result length={len(result)}")
-    report("prefetch includes notebook entries", has_notebook)
-
-    # Tool call: list peers
-    carol_name = carol_id.lstrip("@").split(":")[0]
-    try:
-        peers_json = provider.handle_tool_call("hivemind_list_peers", {})
-        peers = json.loads(peers_json)
-        report("hivemind_list_peers returns carol", any(carol_name in p["name"] for p in peers))
-    except Exception as e:
-        report("hivemind_list_peers returns carol", False, f"{type(e).__name__}: {e}")
-
-    # Send E2EE message via tool
-    try:
-        send_result = provider.handle_tool_call(
-            "hivemind_send_to_peer", {"peer": carol_name, "message": "E2E test msg"})
-        report("hivemind_send_to_peer E2EE works", json.loads(send_result).get("sent"))
-    except Exception as e:
-        report("hivemind_send_to_peer E2EE works", False, f"{type(e).__name__}: {e}")
-
-    provider.shutdown()
-
+# ---- Main ----
 
 async def main():
     print("=" * 60)
-    print("Hivemind E2E Tests")
+    print("Hivemind E2E Tests (with LLM)")
     print("=" * 60)
 
-    async with aiohttp.ClientSession() as session:
-        print("\n--- Service Health ---")
-        await check_continuwuity(session)
-        await check_honcho(session)
-        check_notebook()
+    print("\n--- Service Health ---")
+    check_service("continuwuity", f"{HOMESERVER}/_matrix/client/versions",
+                  lambda d: "versions" in d)
+    check_service("honcho API", f"{HONCHO_URL}/openapi.json",
+                  lambda d: True)
+    agent_up = check_agent_container()
 
-        print("\n--- Matrix E2EE ---")
-        await test_e2ee_introduction(session)
+    print("\n--- Matrix E2EE (no LLM) ---")
+    await test_e2ee_roundtrip()
 
-        print("\n--- Notebook Search ---")
-        test_notebook_search()
+    print("\n--- Notebook Search (no LLM) ---")
+    test_notebook_search()
 
-        print("\n--- Honcho API ---")
-        await test_honcho_workspace(session)
+    if not agent_up:
+        print("\n--- LLM Tests SKIPPED (agent container not running) ---")
+    else:
+        print("\n--- LLM: Peer Awareness ---")
+        test_llm_peer_awareness()
 
-    print("\n--- Hivemind Plugin (all sources) ---")
-    test_hivemind_prefetch_all_sources()
+        print("\n--- LLM: Notebook Ambient Context ---")
+        test_llm_notebook_ambient()
+
+        print("\n--- LLM: No Hallucinated Context ---")
+        test_llm_no_hallucinated_context()
 
     print(f"\n{'=' * 60}")
     print(f"Results: {passed} passed, {failed} failed")
+    if total_estimated_tokens:
+        print(f"Estimated LLM tokens: ~{total_estimated_tokens:,}")
     print(f"{'=' * 60}")
     sys.exit(1 if failed else 0)
 

@@ -81,26 +81,9 @@ SPARK_PROMPT = (
     "Only suggest introductions with clear mutual benefit."
 )
 
-SYSTEM_PROMPT = """## Hive Mind — Peer Awareness
+SYSTEM_PROMPT = """## Hive Mind
 
-You are aware of other agents through introductions. When someone introduces you to another agent, you automatically become aware of them as a "peer."
-
-Your peer context is refreshed every turn — check the Peers section above for who you know and any introduction suggestions.
-
-### Available Tools
-
-- `hivemind_list_peers()` — list all known peers with context
-- `hivemind_check_messages(peer="")` — check messages, optionally from a specific peer
-- `hivemind_send_to_peer(peer, message)` — send a message to a peer
-- `hivemind_get_peer_info(peer)` — detailed info about a peer
-- `hivemind_introduce_peers(peer_a, peer_b, reason="")` — introduce two peers to each other
-- `hivemind_dismiss_spark(peer_a, peer_b)` — dismiss a suggested introduction
-
-### Guidelines
-
-- When suggestions appear, mention them naturally and confirm with the user before acting.
-- Peer names are sufficient identifiers — no need for technical IDs.
-- Introduction context explains *why* two agents were connected. Use it to frame interactions."""
+You have peer awareness via hivemind tools. Use them to explore — details are available on demand, not listed here."""
 
 
 # -- Tool Schemas (OpenAI function calling format) --
@@ -171,7 +154,17 @@ DISMISS_SPARK = {
     },
 }
 
-ALL_TOOLS = [LIST_PEERS, CHECK_MESSAGES, SEND_TO_PEER, GET_PEER_INFO, INTRODUCE_PEERS, DISMISS_SPARK]
+SEARCH_NOTEBOOK = {
+    "name": "hivemind_search_notebook",
+    "description": "Search the shared Hermes notebook for entries relevant to a topic.",
+    "parameters": {
+        "type": "object",
+        "properties": {"query": {"type": "string", "description": "Search query"}},
+        "required": ["query"],
+    },
+}
+
+ALL_TOOLS = [LIST_PEERS, CHECK_MESSAGES, SEND_TO_PEER, GET_PEER_INFO, INTRODUCE_PEERS, DISMISS_SPARK, SEARCH_NOTEBOOK]
 
 
 # -- Spark Engine --
@@ -290,33 +283,17 @@ def _search_notebook(query, limit=NOTEBOOK_SEARCH_LIMIT):
         return data.get("results", data if isinstance(data, list) else [])
 
 
-def _format_notebook(entries):
-    if not entries:
-        return ""
-    lines = ["\n## Notebook — Recent Relevant"]
-    for e in entries:
-        author = e.get("author", e.get("pseudonym", "unknown"))
-        text = e.get("content", e.get("entry", ""))[:200]
-        lines.append(f"- **{author}**: {text}")
-    return "\n".join(lines)
-
-
 def _format_context(peers, suggestions, notebook_entries=None):
-    lines = []
+    parts = []
     if peers:
-        lines += ["## Peers", f"You know {len(peers)} agent(s):"]
-        for p in peers:
-            lines.append(f"- {p['name']} (introduced by {p['introduced_by']}): {p['context'][:120]}")
-        if suggestions:
-            lines.append("\n## Suggestions")
-            for s in suggestions:
-                lines.append(
-                    f"- {s['peer_a']} and {s['peer_b']} might benefit from an introduction: "
-                    f"{s['reason']} (confidence: {s['confidence']})"
-                )
-    lines.append(_format_notebook(notebook_entries))
-    result = "\n".join(lines).strip()
-    return result
+        names = ", ".join(p["name"] for p in peers)
+        parts.append(f"You know {len(peers)} peer(s): {names}. Use hivemind tools for details.")
+    if suggestions:
+        for s in suggestions:
+            parts.append(f"Suggestion: introduce {s['peer_a']} and {s['peer_b']} — {s['reason']}")
+    if notebook_entries:
+        parts.append(f"{len(notebook_entries)} notebook entries may be relevant — use hivemind tools to explore.")
+    return "\n".join(parts)
 
 
 # -- Tool dispatch --
@@ -374,6 +351,18 @@ async def _dispatch(backend, tool_name, args):
         await _update_spark_status(backend, args["peer_a"], args["peer_b"], "dismissed")
         return {"dismissed": True, "peer_a": args["peer_a"], "peer_b": args["peer_b"]}
 
+    raise ValueError(f"Unknown tool: {tool_name}")
+
+
+def _dispatch_notebook(tool_name, args):
+    if tool_name == "hivemind_search_notebook":
+        entries = _search_notebook(args["query"])
+        results = []
+        for e in entries:
+            author = e.get("author", e.get("pseudonym", "unknown"))
+            text = (e.get("content", e.get("entry", "")) or "").strip()
+            results.append({"author": author, "text": text})
+        return results
     raise ValueError(f"Unknown tool: {tool_name}")
 
 
@@ -461,6 +450,8 @@ class HiveMindProvider(MemoryProvider):
     def handle_tool_call(self, tool_name, args, **kwargs):
         if tool_name.startswith("honcho_") and self._honcho:
             return self._honcho.handle_tool_call(tool_name, args, **kwargs)
+        if tool_name == "hivemind_search_notebook":
+            return json.dumps(_dispatch_notebook(tool_name, args))
         assert self._backend, "Matrix backend not configured — peer tools unavailable"
         return json.dumps(_run_async(_dispatch(self._backend, tool_name, args)))
 

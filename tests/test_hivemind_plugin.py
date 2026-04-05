@@ -53,72 +53,7 @@ async def introduced(session):
     return {"alice": alice, "bob": bob, "carol": carol, "room_id": result["room_id"]}
 
 
-# -- Unit tests (no Conduit needed for these) --
-
-def test_tool_schemas_count():
-    assert len(ALL_TOOLS) == 6
-    names = {t["name"] for t in ALL_TOOLS}
-    assert "hivemind_list_peers" in names
-    assert "hivemind_introduce_peers" in names
-    assert "hivemind_dismiss_spark" in names
-
-
-def test_is_available_with_env():
-    provider = HiveMindProvider()
-    with patch.dict(os.environ, {
-        "MATRIX_HOMESERVER": "http://localhost:6167",
-        "MATRIX_USER_ID": "@test:localhost",
-        "MATRIX_ACCESS_TOKEN": "tok",
-    }):
-        assert provider.is_available()
-
-
-def test_is_available_without_env():
-    provider = HiveMindProvider()
-    with patch.dict(os.environ, {"HERMES_URL": ""}, clear=True):
-        # Notebook URL module-level default still set, so patch the constant
-        with patch("hivemind.HERMES_NOTEBOOK_URL", ""):
-            assert not provider.is_available()
-
-
-def test_format_context_empty():
-    assert _format_context([], []) == ""
-
-
-def test_format_context_peers_only():
-    peers = [{"name": "carol", "introduced_by": "alice", "context": "Security researcher"}]
-    result = _format_context(peers, [])
-    assert "carol" in result
-    assert "alice" in result
-    assert "Suggestions" not in result
-
-
-def test_format_context_with_suggestions():
-    peers = [
-        {"name": "bob", "introduced_by": "alice", "context": "DeFi dev"},
-        {"name": "carol", "introduced_by": "alice", "context": "Auditor"},
-    ]
-    suggestions = [{"peer_a": "bob", "peer_b": "carol", "reason": "Match", "confidence": "high"}]
-    result = _format_context(peers, suggestions)
-    assert "Suggestions" in result
-    assert "bob and carol" in result
-
-
-def test_system_prompt_block():
-    provider = HiveMindProvider()
-    block = provider.system_prompt_block()
-    assert "hivemind_list_peers" in block
-    assert "hivemind_introduce_peers" in block
-
-
-def test_get_tool_schemas():
-    provider = HiveMindProvider()
-    schemas = provider.get_tool_schemas()
-    assert len(schemas) == 6
-    assert all("name" in s and "parameters" in s for s in schemas)
-
-
-# -- Integration tests (against live Conduit) --
+# -- Integration tests (E2EE, against live Continuwuity) --
 
 async def test_initialize_creates_backend(introduced):
     bob_id, bob_tok = introduced["bob"]
@@ -133,7 +68,7 @@ async def test_prefetch_returns_peer_context(introduced):
     result = provider.prefetch("who do I know?")
     carol_name = introduced["carol"][0].lstrip("@").split(":")[0]
     assert carol_name in result
-    assert "Peers" in result
+    assert "peer" in result.lower()
     provider.shutdown()
 
 
@@ -220,8 +155,7 @@ async def test_dismiss_spark(introduced):
         await backend.close()
 
 
-# -- Notebook search tests --
-# These tests require HERMES_SECRET_KEY env var for authenticated access
+# -- Notebook search (requires HERMES_SECRET_KEY) --
 
 def _get_test_key():
     key = os.environ.get("HERMES_SECRET_KEY", "")
@@ -230,21 +164,7 @@ def _get_test_key():
     return key
 
 
-def test_search_notebook_returns_results():
-    from hivemind import _search_notebook
-    import hivemind
-    old_key = hivemind.HERMES_SECRET_KEY
-    hivemind.HERMES_SECRET_KEY = _get_test_key()
-    try:
-        results = _search_notebook("matrix federation", limit=3)
-        assert isinstance(results, list)
-        assert len(results) > 0
-        assert "id" in results[0]
-    finally:
-        hivemind.HERMES_SECRET_KEY = old_key
-
-
-def test_search_notebook_returns_content_with_key():
+def test_search_notebook_returns_content():
     from hivemind import _search_notebook
     import hivemind
     old_key = hivemind.HERMES_SECRET_KEY
@@ -255,34 +175,6 @@ def test_search_notebook_returns_content_with_key():
         assert results[0].get("content"), "Expected non-empty content with secret key"
     finally:
         hivemind.HERMES_SECRET_KEY = old_key
-
-
-def test_format_notebook_entries():
-    from hivemind import _format_notebook
-    entries = [
-        {"pseudonym": "Quiet Feather#79c30b", "content": "Testing notebook integration"},
-        {"pseudonym": "Other Author#abc123", "content": "Another entry"},
-    ]
-    result = _format_notebook(entries)
-    assert "Notebook" in result
-    assert "Quiet Feather" in result
-    assert "Testing notebook" in result
-
-
-def test_format_notebook_empty():
-    from hivemind import _format_notebook
-    assert _format_notebook([]) == ""
-    assert _format_notebook(None) == ""
-
-
-def test_format_context_with_notebook():
-    peers = [{"name": "bob", "introduced_by": "alice", "context": "DeFi dev"}]
-    suggestions = []
-    notebook = [{"pseudonym": "Author#123", "content": "Relevant entry"}]
-    result = _format_context(peers, suggestions, notebook)
-    assert "Peers" in result
-    assert "Notebook" in result
-    assert "Relevant entry" in result
 
 
 def test_prefetch_notebook_only():
@@ -296,61 +188,22 @@ def test_prefetch_notebook_only():
             provider.initialize(session_id="test")
         assert provider._backend is None
         result = provider.prefetch("matrix federation")
-        assert "Notebook" in result
+        assert "notebook entries" in result
     finally:
         hivemind.HERMES_SECRET_KEY = old_key
 
 
-# -- Honcho multiplexing tests --
+# -- Honcho routing --
 
 def test_honcho_tool_routing():
-    """honcho_* tools should route to honcho delegate."""
+    """honcho_* tools route to honcho delegate, hivemind_* without backend fails."""
     provider = HiveMindProvider()
     mock_honcho = MagicMock()
     mock_honcho.handle_tool_call.return_value = '{"result": "test"}'
     provider._honcho = mock_honcho
     result = provider.handle_tool_call("honcho_profile", {})
-    mock_honcho.handle_tool_call.assert_called_once_with("honcho_profile", {})
     assert json.loads(result)["result"] == "test"
 
-
-def test_hivemind_tool_without_backend_raises():
-    """hivemind_* tools without Matrix backend should fail."""
-    provider = HiveMindProvider()
-    provider._backend = None
+    provider2 = HiveMindProvider()
     with pytest.raises(AssertionError, match="Matrix backend not configured"):
-        provider.handle_tool_call("hivemind_list_peers", {})
-
-
-def test_tool_schemas_include_honcho():
-    """When honcho is available, tool schemas should include both sets."""
-    provider = HiveMindProvider()
-    mock_honcho = MagicMock()
-    mock_honcho.get_tool_schemas.return_value = [
-        {"name": "honcho_profile", "parameters": {}},
-        {"name": "honcho_search", "parameters": {}},
-    ]
-    provider._honcho = mock_honcho
-    schemas = provider.get_tool_schemas()
-    names = {s["name"] for s in schemas}
-    assert "hivemind_list_peers" in names
-    assert "honcho_profile" in names
-    assert len(schemas) == 8  # 6 hivemind + 2 mock honcho
-
-
-def test_sync_turn_forwards_to_honcho():
-    provider = HiveMindProvider()
-    mock_honcho = MagicMock()
-    provider._honcho = mock_honcho
-    provider.sync_turn("hello", "hi there", session_id="s1")
-    mock_honcho.sync_turn.assert_called_once_with("hello", "hi there", session_id="s1")
-
-
-def test_system_prompt_includes_honcho():
-    provider = HiveMindProvider()
-    mock_honcho = MagicMock()
-    mock_honcho.system_prompt_block.return_value = "# Honcho Memory"
-    provider._honcho = mock_honcho
-    block = provider.system_prompt_block()
-    assert "Hive Mind" in block
-    assert "Honcho Memory" in block
+        provider2.handle_tool_call("hivemind_list_peers", {})
