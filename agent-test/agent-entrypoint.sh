@@ -30,6 +30,27 @@ with open(cfg_path, 'w') as f:
     yaml.dump(cfg, f, default_flow_style=False)
 "
 
+# Configure honcho for hivemind multiplexing
+mkdir -p /root/.honcho
+HONCHO_URL="${HONCHO_BASE_URL:-http://honcho-api:8000}"
+cat > /root/.honcho/config.json << HEOF
+{
+  "hosts": {
+    "hermes": {
+      "base_url": "$HONCHO_URL",
+      "workspace": "hermes-test",
+      "peerName": "$(echo $MATRIX_USER_ID | sed 's/@//;s/:.*//') ",
+      "aiPeer": "hermes",
+      "memoryMode": "hybrid",
+      "writeFrequency": "async",
+      "recallMode": "hybrid",
+      "sessionStrategy": "per-session",
+      "enabled": true
+    }
+  }
+}
+HEOF
+
 cd "$INSTALL_DIR"
 
 if [ $# -gt 0 ]; then

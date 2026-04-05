@@ -97,8 +97,8 @@ async def three_peer_setup(session):
     dave_id, dave_tok = dave
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security audits", encrypted=False)
-    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave builds frontend UIs", encrypted=False)
+    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security audits", encrypted=True)
+    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave builds frontend UIs", encrypted=True)
     await introducer.close()
 
     backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())

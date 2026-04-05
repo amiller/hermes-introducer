@@ -43,7 +43,7 @@ async def introduced(agents, session):
         "Bob is a Rust developer who reviews smart contracts",
         "Carol specializes in TEE attestation and security audits",
         room_name="Test Introduction",
-        encrypted=False,
+        encrypted=True,
     )
     await introducer.close()
     return {**agents, "room_id": result["room_id"]}
@@ -176,8 +176,8 @@ async def test_multiple_introductions(agents, session):
     dave_id, dave_tok = await register_user(session, f"sa_dave_{tag}")
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security", encrypted=False)
-    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend", encrypted=False)
+    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security", encrypted=True)
+    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend", encrypted=True)
     await introducer.close()
 
     backend = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())
@@ -257,8 +257,8 @@ async def test_introduce_peers_creates_room(agents, session):
 
     # Alice introduces Bob↔Carol and Bob↔Dave
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security", encrypted=False)
-    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend", encrypted=False)
+    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security", encrypted=True)
+    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend", encrypted=True)
     await introducer.close()
 
     # Bob discovers peers, then introduces Carol↔Dave
@@ -290,8 +290,8 @@ async def test_introduce_peers_posts_context(agents, session):
     dave_id, dave_tok = await register_user(session, f"sa_dave_{tag}")
 
     introducer = MatrixIntroducer(HOMESERVER, alice_id, alice_tok)
-    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security", encrypted=False)
-    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend", encrypted=False)
+    await introducer.introduce(bob_id, carol_id, "Bob does Rust", "Carol does security", encrypted=True)
+    await introducer.introduce(bob_id, dave_id, "Bob does Rust", "Dave does frontend", encrypted=True)
     await introducer.close()
 
     bob_b = MatrixBackend(HOMESERVER, bob_id, bob_tok, store_path=tempfile.mkdtemp())

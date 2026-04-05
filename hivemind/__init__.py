@@ -9,7 +9,7 @@ Config via environment variables:
   MATRIX_ACCESS_TOKEN  — Matrix access token
 """
 
-import asyncio, json, logging, os, queue, threading, uuid
+import asyncio, json, logging, os, queue, threading, uuid, urllib.request, urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -17,8 +17,9 @@ from agent.memory_provider import MemoryProvider
 
 logger = logging.getLogger(__name__)
 
-# Lazy import — matrix_backend.py may be in plugin dir or on sys.path
+# Lazy imports
 _MatrixBackend = None
+_HonchoProvider = None
 
 def _get_backend_class():
     global _MatrixBackend
@@ -26,6 +27,18 @@ def _get_backend_class():
         from matrix_backend import MatrixBackend
         _MatrixBackend = MatrixBackend
     return _MatrixBackend
+
+def _get_honcho_provider():
+    global _HonchoProvider
+    if _HonchoProvider is None:
+        import importlib
+        mod = importlib.import_module("plugins.memory.honcho")
+        for attr in dir(mod):
+            obj = getattr(mod, attr)
+            if isinstance(obj, type) and issubclass(obj, MemoryProvider) and obj is not MemoryProvider:
+                _HonchoProvider = obj
+                break
+    return _HonchoProvider
 
 
 _loop = None
@@ -46,6 +59,10 @@ def _run_async(coro):
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     return future.result(timeout=30)
 
+
+HERMES_NOTEBOOK_URL = os.environ.get("HERMES_URL", "https://hermes.teleport.computer")
+HERMES_SECRET_KEY = os.environ.get("HERMES_SECRET_KEY", "")
+NOTEBOOK_SEARCH_LIMIT = 5
 
 SUMMARY_KEY = "social.awareness.summary"
 SPARKS_KEY = "social.awareness.sparks"
@@ -262,53 +279,82 @@ async def _update_spark_status(backend, peer_a, peer_b, status):
     await backend._put_global_account_data(SPARKS_KEY, data)
 
 
-def _format_context(peers, suggestions):
-    if not peers:
+def _search_notebook(query, limit=NOTEBOOK_SEARCH_LIMIT):
+    p = {"q": query, "limit": limit}
+    if HERMES_SECRET_KEY:
+        p["key"] = HERMES_SECRET_KEY
+    url = f"{HERMES_NOTEBOOK_URL}/api/search?{urllib.parse.urlencode(p)}"
+    req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read())
+        return data.get("results", data if isinstance(data, list) else [])
+
+
+def _format_notebook(entries):
+    if not entries:
         return ""
-    lines = ["## Peers", f"You know {len(peers)} agent(s):"]
-    for p in peers:
-        lines.append(f"- {p['name']} (introduced by {p['introduced_by']}): {p['context'][:120]}")
-    if suggestions:
-        lines.append("\n## Suggestions")
-        for s in suggestions:
-            lines.append(
-                f"- {s['peer_a']} and {s['peer_b']} might benefit from an introduction: "
-                f"{s['reason']} (confidence: {s['confidence']})"
-            )
+    lines = ["\n## Notebook — Recent Relevant"]
+    for e in entries:
+        author = e.get("author", e.get("pseudonym", "unknown"))
+        text = e.get("content", e.get("entry", ""))[:200]
+        lines.append(f"- **{author}**: {text}")
     return "\n".join(lines)
+
+
+def _format_context(peers, suggestions, notebook_entries=None):
+    lines = []
+    if peers:
+        lines += ["## Peers", f"You know {len(peers)} agent(s):"]
+        for p in peers:
+            lines.append(f"- {p['name']} (introduced by {p['introduced_by']}): {p['context'][:120]}")
+        if suggestions:
+            lines.append("\n## Suggestions")
+            for s in suggestions:
+                lines.append(
+                    f"- {s['peer_a']} and {s['peer_b']} might benefit from an introduction: "
+                    f"{s['reason']} (confidence: {s['confidence']})"
+                )
+    lines.append(_format_notebook(notebook_entries))
+    result = "\n".join(lines).strip()
+    return result
 
 
 # -- Tool dispatch --
 
+async def _ensure_peers(backend):
+    if not backend._peer_rooms:
+        await backend.get_peers()
+
 async def _dispatch(backend, tool_name, args):
+    await _ensure_peers(backend)
+
     if tool_name == "hivemind_list_peers":
         return await backend.get_peers()
 
     if tool_name == "hivemind_check_messages":
         peer = args.get("peer", "")
         if not peer:
-            peers = await backend.get_peers()
             all_msgs = []
-            for p in peers:
-                msgs = await backend.get_messages_from_peer(p["name"])
-                all_msgs.append({"peer": p["name"], "messages": msgs})
+            for room_id, meta in backend._peer_rooms.items():
+                name = meta.get("peer_name", "")
+                msgs = await backend.get_messages_from_peer(name)
+                all_msgs.append({"peer": name, "messages": msgs})
             return all_msgs
         return await backend.get_messages_from_peer(peer)
 
     if tool_name == "hivemind_send_to_peer":
-        await backend.get_peers()
         await backend.send_to_peer(args["peer"], args["message"])
         return {"sent": True, "to": args["peer"]}
 
     if tool_name == "hivemind_get_peer_info":
-        peers = await backend.get_peers()
-        for p in peers:
+        for meta in backend._peer_rooms.values():
+            from matrix_backend import _format_peer
+            p = _format_peer(meta)
             if p["name"] == args["peer"] or args["peer"] in p["name"]:
                 return p
         return {"error": f"Unknown peer: {args['peer']}"}
 
     if tool_name == "hivemind_introduce_peers":
-        await backend.get_peers()
         meta_a = backend.get_peer_meta(args["peer_a"])
         meta_b = backend.get_peer_meta(args["peer_b"])
         assert meta_a, f"Unknown peer: {args['peer_a']}"
@@ -341,41 +387,106 @@ class HiveMindProvider(MemoryProvider):
 
     def __init__(self):
         self._backend = None
+        self._honcho = None
         self._cached_prefetch = ""
+        self._cached_peers = []
+
+    def _init_honcho(self):
+        try:
+            cls = _get_honcho_provider()
+            if cls:
+                h = cls()
+                if h.is_available():
+                    return h
+        except Exception as e:
+            logger.debug("Honcho not available: %s", e)
+        return None
 
     def is_available(self):
-        return all(os.environ.get(k) for k in
-                   ["MATRIX_HOMESERVER", "MATRIX_USER_ID", "MATRIX_ACCESS_TOKEN"])
+        has_matrix = all(os.environ.get(k) for k in
+                        ["MATRIX_HOMESERVER", "MATRIX_USER_ID", "MATRIX_ACCESS_TOKEN"])
+        return has_matrix or bool(HERMES_NOTEBOOK_URL)
 
     def initialize(self, session_id, **kwargs):
-        Backend = _get_backend_class()
-        self._backend = Backend(
-            os.environ["MATRIX_HOMESERVER"],
-            os.environ["MATRIX_USER_ID"],
-            os.environ["MATRIX_ACCESS_TOKEN"],
-        )
-        _run_async(self._backend.get_peers())
+        has_matrix = all(os.environ.get(k) for k in
+                        ["MATRIX_HOMESERVER", "MATRIX_USER_ID", "MATRIX_ACCESS_TOKEN"])
+        if has_matrix:
+            Backend = _get_backend_class()
+            self._backend = Backend(
+                os.environ["MATRIX_HOMESERVER"],
+                os.environ["MATRIX_USER_ID"],
+                os.environ["MATRIX_ACCESS_TOKEN"],
+            )
+            self._cached_peers = _run_async(self._backend.get_peers())
+        self._honcho = self._init_honcho()
+        if self._honcho:
+            self._honcho.initialize(session_id, **kwargs)
 
     def system_prompt_block(self):
-        return SYSTEM_PROMPT
+        parts = [SYSTEM_PROMPT]
+        if self._honcho:
+            h_block = self._honcho.system_prompt_block()
+            if h_block:
+                parts.append(h_block)
+        return "\n\n".join(parts)
 
     def prefetch(self, query, *, session_id=""):
-        peers = _run_async(self._backend.get_peers())
-        try:
-            suggestions = _run_async(_maybe_update_and_spark(self._backend, peers))
-        except Exception as e:
-            logger.debug("Spark detection failed (non-fatal): %s", e)
-            suggestions = []
-        self._cached_prefetch = _format_context(peers, suggestions)
+        peers, suggestions, notebook_entries = self._cached_peers, [], []
+        if self._backend and not peers:
+            peers = _run_async(self._backend.get_peers())
+            self._cached_peers = peers
+        if query:
+            try:
+                notebook_entries = _search_notebook(query)
+            except Exception as e:
+                logger.debug("Notebook search failed: %s", e)
+        honcho_context = ""
+        if self._honcho:
+            try:
+                honcho_context = self._honcho.prefetch(query, session_id=session_id) or ""
+            except Exception as e:
+                logger.debug("Honcho prefetch failed: %s", e)
+        parts = [_format_context(peers, suggestions, notebook_entries)]
+        if honcho_context:
+            parts.append(honcho_context)
+        self._cached_prefetch = "\n\n".join(p for p in parts if p)
         return self._cached_prefetch
 
     def get_tool_schemas(self):
-        return list(ALL_TOOLS)
+        tools = list(ALL_TOOLS)
+        if self._honcho:
+            tools.extend(self._honcho.get_tool_schemas())
+        return tools
 
     def handle_tool_call(self, tool_name, args, **kwargs):
+        if tool_name.startswith("honcho_") and self._honcho:
+            return self._honcho.handle_tool_call(tool_name, args, **kwargs)
+        assert self._backend, "Matrix backend not configured — peer tools unavailable"
         return json.dumps(_run_async(_dispatch(self._backend, tool_name, args)))
 
+    def sync_turn(self, user_content, assistant_content, *, session_id=""):
+        if self._honcho and hasattr(self._honcho, "sync_turn"):
+            self._honcho.sync_turn(user_content, assistant_content, session_id=session_id)
+
+    def on_turn_start(self, turn_number, message="", **kwargs):
+        if self._honcho and hasattr(self._honcho, "on_turn_start"):
+            self._honcho.on_turn_start(turn_number, message, **kwargs)
+
+    def queue_prefetch(self, query, *, session_id=""):
+        if self._honcho and hasattr(self._honcho, "queue_prefetch"):
+            self._honcho.queue_prefetch(query, session_id=session_id)
+
+    def on_session_end(self, messages=None):
+        if self._honcho and hasattr(self._honcho, "on_session_end"):
+            self._honcho.on_session_end(messages)
+
+    def on_memory_write(self, action="", target="", content=""):
+        if self._honcho and hasattr(self._honcho, "on_memory_write"):
+            self._honcho.on_memory_write(action, target, content)
+
     def shutdown(self):
+        if self._honcho:
+            self._honcho.shutdown()
         if self._backend:
             _run_async(self._backend.close())
 

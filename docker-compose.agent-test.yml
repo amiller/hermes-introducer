@@ -1,10 +1,11 @@
-# Isolated test: 3 hermes agents + Continuwuity Matrix server
+# Isolated test: 3 hermes agents + Continuwuity Matrix server + Honcho
 #
 # Build:  docker compose -f docker-compose.agent-test.yml build
-# Start:  docker compose -f docker-compose.agent-test.yml up continuwuity -d
+# Start:  docker compose -f docker-compose.agent-test.yml up continuwuity honcho-api honcho-db honcho-redis -d
 # Setup:  python3 agent-test/scenario.py
 # Run:    docker compose -f docker-compose.agent-test.yml --env-file agent-test/.env.agents up -d
 # Chat:   docker exec -it hermes-introducer-hermes-of-bob-1 hermes chat
+# Test:   python3 agent-test/test_e2e.py
 
 services:
   continuwuity:
@@ -15,6 +16,40 @@ services:
       - continuwuity-agent-test:/var/lib/conduwuit
     environment:
       CONDUWUIT_CONFIG: /etc/conduwuit.toml
+
+  honcho-db:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  honcho-redis:
+    image: redis:8.2
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  honcho-api:
+    build:
+      context: /home/amiller/projects/honcho-local
+      dockerfile: Dockerfile
+    depends_on:
+      honcho-db:
+        condition: service_healthy
+      honcho-redis:
+        condition: service_healthy
+    ports: ["8100:8000"]
+    environment:
+      DB_CONNECTION_URI: postgresql+psycopg://postgres:postgres@honcho-db:5432/postgres
+      CACHE_URL: redis://honcho-redis:6379/0?suppress=true
 
   hermes-of-alice: &agent
     build:
@@ -27,7 +62,8 @@ services:
       MATRIX_HOMESERVER: http://continuwuity:6167
       MATRIX_USER_ID: ${ALICE_USER_ID}
       MATRIX_ACCESS_TOKEN: ${ALICE_ACCESS_TOKEN}
-    depends_on: [continuwuity]
+      HONCHO_BASE_URL: http://honcho-api:8000
+    depends_on: [continuwuity, honcho-api]
     stdin_open: true
     tty: true
 
