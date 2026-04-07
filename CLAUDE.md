@@ -2,6 +2,18 @@
 
 Cross-agent introduction service using Matrix protocol with E2EE.
 
+**Status: archived POC.** Active development moved to `Account-Link/dev-router-matrix` (private). This repo is kept public as a standalone proof of concept.
+
+## Related repos
+| Repo | Visibility | Purpose |
+|---|---|---|
+| `amiller/hermes-introducer` | public (archived) | This one — standalone hivemind/introduction POC |
+| `Account-Link/dev-router-matrix` | private | Teleport Router product (live CVM, MCP bot) |
+| `amiller/dstack-matrix` | public | Clean example of Matrix on TEE |
+
+## Hivemind plugin
+The `hivemind/` directory is symlinked into hermes-agent at `~/.hermes/hermes-agent/plugins/memory/hivemind`. It provides the `MemoryProvider` that reads/writes notebook entries via Matrix.
+
 ## Dev setup
 ```
 docker compose up continuwuity -d   # Continuwuity on :6167
